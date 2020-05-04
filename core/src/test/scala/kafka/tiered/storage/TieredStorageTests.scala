@@ -91,12 +91,12 @@ object TieredStorageTests {
          *         - First-tier storage -            - Second-tier storage -
          *           Log tB-p0                         Log tB-p0
          *          *-------------------*             *-------------------*
-         *          | base offset = 2   |             |  base offset = 0  |
+         *          | base offset = 4   |             |  base offset = 0  |
          *          | (k5, v5)          |             |  (k1, v1)         |
          *          *-------------------*             |  (k2, v2)         |
          *                                            *-------------------*
          *                                            *-------------------*
-         *                                            |  base offset = 0  |
+         *                                            |  base offset = 2  |
          *                                            |  (k3, v3)         |
          *                                            |  (k4, v4)         |
          *                                            *-------------------*
@@ -104,6 +104,7 @@ object TieredStorageTests {
         .createTopic(topicB, partitionsCount = 1, replicationFactor = 1, maxBatchCountPerSegment = 2)
         .produce(topicB, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"), ("k4", "v4"), ("k5", "v5"))
         .withBatchSize(topicB, p0, 1)
+        .expectEarliestOffsetInLogDirectory(topicB, p0, 4)
         .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 0, recordCount = 2)
         .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 2, recordCount = 2)
 
@@ -175,7 +176,7 @@ object TieredStorageTests {
           ("k9", "v9"), ("k10", "v10"), ("k11", "v11"),    // Second batch B
           ("k12", "v12"), ("k13", "v13"), ("k14", "v14"))  // Third batch C
         .withBatchSize(topicB, p0, 3)
-        .expectEarliestOffsetInLogDirectory(topicB, p0, 9)
+        .expectEarliestOffsetInLogDirectory(topicB, p0, 11)
         .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 4, recordCount = 1)
         .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 5, recordCount = 4)
         .consume(topicB, p0, fetchOffset = 0, expectedTotalRecord = 14, expectedRecordsFromSecondTier = 11)
