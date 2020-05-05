@@ -229,9 +229,6 @@ final class ProduceAction(val topicPartition: TopicPartition,
     // Take a physical snapshot of the second-tier storage, and compare the records found with
     // those of the expected log segments.
     //
-    // TODO: Handle incremental population of the second-tier storage.
-    //       Currently all of records found are considered.
-    //
     val snapshot = context.takeTieredStorageSnapshot()
 
     snapshot.getFilesets(topicPartition).asScala
@@ -610,7 +607,9 @@ final class TieredStorageTestBuilder {
       producables.foreach {
         case (topicPartition, (records, batchSize, earliestOffsetInLogDirectory)) =>
           val recordsToProduce = Seq() ++ records
-          val offloadedSegmentSpecs = offloadables(topicPartition).map(makeSpec(topicPartition, records, _))
+          val offloadedSegmentSpecs =
+            offloadables.getOrElse(topicPartition, mutable.Buffer())
+            .map(makeSpec(topicPartition, records, _))
 
           actions += new ProduceAction(
             topicPartition, offloadedSegmentSpecs,recordsToProduce, batchSize, earliestOffsetInLogDirectory)

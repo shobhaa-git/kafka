@@ -129,11 +129,14 @@ object TieredStorageTests {
         /*
          * (A.4) Scenario similar to (A.2) but with records produced as batches of three elements.
          *
-         *       Note: the segment produced with a base offset 4 contains only 1 record, despite a
+         *       Note 1: the segment produced with a base offset 4 contains only 1 record, despite a
          *       max batch count per segment of 2. This is because when the broker is restarted, the
          *       timestamp of that record is appended to the time index, which only accepts two
          *       entries. When the batch A is appended to the log, the time index is detected as full
          *       (because the number of entries >= max-entries - 1), and the segment is rolled over.
+         *
+         *       Note 2: Records with key k1, k2, k3, k4 and k5 are also part of a batch - in that
+         *       case, of size 1.
          *
          *       Acceptance:
          *       -----------
@@ -267,12 +270,14 @@ object TieredStorageTests {
 
         .stop(follower)
         .produce(topicA, p0, ("k2", "v2"), ("k3", "v3"))
+        .withBatchSize(topicA, p0, 1)
         .expectSegmentToBeOffloaded(leader, topicA, p0, baseOffset = 1, recordCount = 1)
 
         .stop(leader)
         .start(follower)
         .expectLeader(topicA, p0, follower)
         .produce(topicA, p0, ("k4", "v4"), ("k5", "v5"))
+        .withBatchSize(topicA, p0, 1)
         .expectSegmentToBeOffloaded(follower, topicA, p0, baseOffset = 1, recordCount = 1)
     }
   }

@@ -100,7 +100,10 @@ final class TieredStorageTestContext(private val zookeeperClient: KafkaZkClient,
     //
     // Send the given records trying to honor the batch size. This is attempted
     // with a large producer linger and the use of an explicit flush every time
-    // the number of records sent reaches the batch size.
+    // the number of a "group" of records reaches the batch size.
+    // Note that "group" does not mean "batch"; the former is the result of a
+    // user-driven behaviour, the latter is a construction internal to the
+    // producer and part of the Kafka's ingestion mechanism.
     //
     records.grouped(batchSize).foreach { groupedRecords =>
       groupedRecords.foreach(producer.send(_))
