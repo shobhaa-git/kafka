@@ -127,7 +127,7 @@ object TieredStorageTests {
         .expectFetchFromTieredStorage(broker, topicB, p0, remoteFetchRequestCount = 2)
 
         /*
-         * (A.4) Scenario similar to (A.2) but with records produced as batches of three elements.
+         * (A.4) Scenario similar to (A.2) but with records produced to construct batches of three elements.
          *
          *       Note 1: the segment produced with a base offset 4 contains only 1 record, despite a
          *       max batch count per segment of 2. This is because when the broker is restarted, the

@@ -374,6 +374,17 @@ class Log(@volatile private var _dir: File,
     else if(offset > highestOffsetWithRemoteIndex) highestOffsetWithRemoteIndex = offset
   }
 
+  def leaderEpochRangeFor(segment: LogSegment): Option[(Int, Int)] = {
+    if (segments.containsValue(segment)) {
+      leaderEpochCache.flatMap { cache =>
+        val startLeaderEpoch = cache.leaderEpochFor(segment.baseOffset)
+        val endLeaderEpoch = cache.leaderEpochFor(segment.readNextOffset - 1)
+
+        startLeaderEpoch zip endLeaderEpoch
+      }
+    } else None
+  }
+
   /**
    * Update the high watermark to a new value if and only if it is larger than the old value. It is
    * an error to update to a value which is larger than the log end offset.
@@ -1815,6 +1826,7 @@ class Log(@volatile private var _dir: File,
           (null, logEndOffset, segment.size == 0)
 
         // check not to delete segments which do not have remote indexes locally.
+        //TODO(duprie) corner case
         val deleteOnlyWhenRemoteIndexExistsLocally =
           if(remoteLogEnabled) upperBoundOffset > 0 && upperBoundOffset-1 <= highestOffsetWithRemoteIndex else true
 

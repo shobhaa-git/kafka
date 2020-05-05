@@ -242,6 +242,9 @@ final class ProduceAction(val topicPartition: TopicPartition,
       .drop(startOffset.toInt)
       // TODO: Add check on size
       .zip(offloadedSegmentSpecs)
+      //
+      //
+      .filter { case (fileset, spec) => fileset.getOriginBrokerId == spec.sourceBrokerId }
       .foreach {
         pair => compareRecords(pair._1, pair._2, topicPartition)
       }

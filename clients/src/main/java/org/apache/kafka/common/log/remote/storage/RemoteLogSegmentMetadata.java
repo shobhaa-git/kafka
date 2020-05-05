@@ -127,6 +127,10 @@ public class RemoteLogSegmentMetadata implements Serializable {
         return leaderEpoch;
     }
 
+    public boolean containsOffset(final long offset) {
+        return startOffset >= offset && endOffset >= offset;
+    }
+
     public long createdTimestamp() {
         return createdTimestamp;
     }

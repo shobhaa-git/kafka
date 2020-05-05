@@ -167,6 +167,13 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
     }
   }
 
+  def leaderEpochFor(offset: Long): Option[Int] = {
+    inReadLock(lock) {
+      val (subsequentStartOffsets, previousStartOffsets) = epochs.partition(_.startOffset > offset)
+      previousStartOffsets.lastOption.map(_.epoch)
+    }
+  }
+
   /**
     * Removes all epoch entries from the store with start offsets greater than or equal to the passed offset.
     */

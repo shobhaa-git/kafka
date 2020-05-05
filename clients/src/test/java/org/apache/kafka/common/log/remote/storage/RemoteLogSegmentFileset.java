@@ -199,6 +199,10 @@ public final class RemoteLogSegmentFileset {
                 .collect(Collectors.toList());
     }
 
+    public int getOriginBrokerId() {
+        return RemoteLogSegmentFileType.getBrokerId(files.get(SEGMENT).getName());
+    }
+
     public void copy(final Transferer transferer, final LogSegmentData data) throws IOException {
         transferer.transfer(data.logSegment(), files.get(SEGMENT));
         transferer.transfer(data.offsetIndex(), files.get(OFFSET_INDEX));

@@ -26,7 +26,7 @@ import java.util.function.{BiConsumer, Consumer, Function}
 
 import kafka.cluster.Partition
 import kafka.common.KafkaException
-import kafka.log.Log
+import kafka.log.{Log, LogSegment}
 import kafka.server.{Defaults, FetchDataInfo, KafkaConfig, LogOffsetMetadata, RemoteStorageFetchInfo}
 import kafka.utils.Logging
 import org.apache.kafka.clients.CommonClientConfigs
@@ -345,21 +345,27 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                   return
                 }
 
-                val file = segment.log.file()
-                val fileName = file.getName
-                info(s"Copying $fileName to remote storage.");
-                val id = new RemoteLogSegmentId(tp, java.util.UUID.randomUUID())
-
-                //todo-tier double check on this
                 val endOffset = segment.readNextOffset - 1
-                remoteLogMetadataManager.putRemoteLogSegmentData(new RemoteLogSegmentMetadata(id, segment.baseOffset, endOffset, segment.maxTimestampSoFar,
-                                    leaderEpochVal, null))
 
-                val segmentData = new LogSegmentData(file, segment.lazyOffsetIndex.get.file,
-                  segment.lazyTimeIndex.get.file)
-                val remoteLogContext = remoteLogStorageManager.copyLogSegment(id, segmentData)
+                if (shouldSegmentBeOffloaded(log, segment)) {
+                  //TODO: There is a race condition here which was exhibited during integration testing.
+                  // 00000000000000000000.log.deleted
 
-                remoteLogMetadataManager.putRemoteLogSegmentData(new RemoteLogSegmentMetadata(id, segment.baseOffset, endOffset, segment.maxTimestampSoFar, leaderEpochVal, System.currentTimeMillis(), false, remoteLogContext.asBytes()))
+                  val file = segment.log.file()
+                  val fileName = file.getName
+                  info(s"Copying $fileName to remote storage.");
+                  val id = new RemoteLogSegmentId(tp, java.util.UUID.randomUUID())
+
+                  //todo-tier double check on this
+                  remoteLogMetadataManager.putRemoteLogSegmentData(new RemoteLogSegmentMetadata(id, segment.baseOffset, endOffset, segment.maxTimestampSoFar,
+                    leaderEpochVal, null))
+
+                  val segmentData = new LogSegmentData(file, segment.lazyOffsetIndex.get.file,
+                    segment.lazyTimeIndex.get.file)
+                  val remoteLogContext = remoteLogStorageManager.copyLogSegment(id, segmentData)
+
+                  remoteLogMetadataManager.putRemoteLogSegmentData(new RemoteLogSegmentMetadata(id, segment.baseOffset, endOffset, segment.maxTimestampSoFar, leaderEpochVal, System.currentTimeMillis(), false, remoteLogContext.asBytes()))
+                }
 
                 readOffset = endOffset
                 log.updateRemoteIndexHighestOffset(readOffset)
@@ -434,6 +440,22 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
     override def toString: String = {
       this.getClass.toString + s"[$tp]"
+    }
+
+    private def shouldSegmentBeOffloaded(log: Log, segment: LogSegment): Boolean = {
+      val localEpochRangeOpt = log.leaderEpochRangeFor(segment)
+
+      val isTiered = localEpochRangeOpt.flatMap { localEpochRange =>
+        val (baseOffset, endOffset) = (segment.baseOffset, segment.readNextOffset - 1)
+        val metadata = remoteLogMetadataManager.listRemoteLogSegments(tp).asScala
+
+        val startRemoteLeaderEpochOpt = metadata.find(_.containsOffset(baseOffset)).map(_.leaderEpoch())
+        val endRemoteLeaderEpochOpt = metadata.find(_.containsOffset(endOffset)).map(_.leaderEpoch())
+
+        startRemoteLeaderEpochOpt.zip(endRemoteLeaderEpochOpt).map(_.equals(localEpochRange))
+      }
+
+      !isTiered.getOrElse(false)
     }
   }
 
