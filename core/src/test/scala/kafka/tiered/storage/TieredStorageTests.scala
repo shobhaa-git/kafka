@@ -242,7 +242,7 @@ object TieredStorageTests {
          */
         .eraseBrokerStorage(broker0)
         .start(broker0)
-        .expectLeader(topicA, p0, broker0, electLeader = true)
+        .expectLeader(topicA, p0, broker0, electPreferredLeader = true)
         //
         // TODO There is a race condition here. If consumption happens "too soon" and the remote log metadata
         //      manager has not been given enough time to update the remote log metadata, only the
@@ -264,21 +264,60 @@ object TieredStorageTests {
     override protected def writeTestSpecifications(builder: TieredStorageTestBuilder): Unit = {
       val assignment = Map(p0 -> Seq(leader, follower))
 
+//      builder
+//        .createTopic(topicA, partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 1, assignment)
+//        .produce(topicA, p0, ("k1", "v1"))
+//
+//        .stop(follower)
+//        .produce(topicA, p0, ("k2", "v2"), ("k3", "v3"))
+//        .withBatchSize(topicA, p0, 1)
+//        .expectSegmentToBeOffloaded(leader, topicA, p0, baseOffset = 1, recordCount = 1)
+//
+//        .stop(leader)
+//        .start(follower)
+//        .expectLeader(topicA, p0, follower)
+//        .produce(topicA, p0, ("k4", "v4"), ("k5", "v5"))
+//        .withBatchSize(topicA, p0, 1)
+//        .expectSegmentToBeOffloaded(follower, topicA, p0, baseOffset = 1, recordCount = 1)
+
       builder
-        .createTopic(topicA, partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 1, assignment)
+        .createTopic(topicA, partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 4, assignment)
         .produce(topicA, p0, ("k1", "v1"))
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
 
         .stop(follower)
-        .produce(topicA, p0, ("k2", "v2"), ("k3", "v3"))
+        .produce(topicA, p0, ("k2", "v2"))
         .withBatchSize(topicA, p0, 1)
-        .expectSegmentToBeOffloaded(leader, topicA, p0, baseOffset = 1, recordCount = 1)
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
 
         .stop(leader)
         .start(follower)
         .expectLeader(topicA, p0, follower)
-        .produce(topicA, p0, ("k4", "v4"), ("k5", "v5"))
+        .produce(topicA, p0, ("k3", "v3"))
         .withBatchSize(topicA, p0, 1)
-        .expectSegmentToBeOffloaded(follower, topicA, p0, baseOffset = 1, recordCount = 1)
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
+
+        .stop(follower)
+        .start(leader)
+        .expectLeader(topicA, p0, leader)
+        .produce(topicA, p0, ("k4", "v4"))
+        .withBatchSize(topicA, p0, 1)
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
+
+        .stop(leader)
+        .start(follower)
+        .expectLeader(topicA, p0, follower)
+        .produce(topicA, p0, ("k5", "v5"), ("k6", "v6"), ("k7", "v7"))
+        .withBatchSize(topicA, p0, 1)
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 4)
+
+        .start(leader)
+        .expectInIsr(topicA, p0, leader)
+        .expectLeader(topicA, p0, leader, electPreferredLeader = true)
+        .produce(topicA, p0, ("k8", "v8"), ("k9", "v9"), ("k10", "v10"))
+        .withBatchSize(topicA, p0, 1)
+        .expectEarliestOffsetInLogDirectory(topicA, p0, 4)
+        .expectSegmentToBeOffloaded(leader, topicA, p0, 0, 4)
     }
   }
 

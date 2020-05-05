@@ -537,8 +537,8 @@ final class TieredStorageTestBuilder {
     this
   }
 
-  def expectLeader(topic: String, partition: Int, brokerId: Int, electLeader: Boolean = false): this.type = {
-    actions += new ExpectLeaderAction(new TopicPartition(topic, partition), brokerId, electLeader)
+  def expectLeader(topic: String, partition: Int, brokerId: Int, electPreferredLeader: Boolean = false): this.type = {
+    actions += new ExpectLeaderAction(new TopicPartition(topic, partition), brokerId, electPreferredLeader)
     this
   }
 
@@ -600,9 +600,9 @@ final class TieredStorageTestBuilder {
     : OffloadedSegmentSpec = {
 
       attrs match {
-        case (sourceBroker:Int, baseOffset: Int, segmentSize: Int) =>
-          val segments = (0 until segmentSize).map(_ => records.remove(0))
-          new OffloadedSegmentSpec(sourceBroker, topicPartition, baseOffset, segments)
+        case (sourceBroker:Int, baseOffset: Int, expectedRecordCount: Int) =>
+          val offloadedRecords = (0 until Math.min(expectedRecordCount, records.length)).map(_ => records.remove(0))
+          new OffloadedSegmentSpec(sourceBroker, topicPartition, baseOffset, offloadedRecords)
       }
     }
 
