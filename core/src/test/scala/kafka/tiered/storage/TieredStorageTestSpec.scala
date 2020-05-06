@@ -447,7 +447,8 @@ final class TieredStorageTestBuilder {
   private var producables:
     mutable.Map[TopicPartition, (mutable.Buffer[ProducerRecord[String, String]], Int, Long)] = mutable.Map()
 
-  private var offloadables: mutable.Map[TopicPartition, mutable.Buffer[(Int, Int, Int)]] = mutable.Map()
+  private var offloadables:
+    mutable.Map[TopicPartition, mutable.Buffer[(Int, Int, Seq[ProducerRecord[String, String]])]] = mutable.Map()
 
   private var consumables: mutable.Map[TopicPartition, (Long, Int, Int)] = mutable.Map()
   private var fetchables: mutable.Map[TopicPartition, (Int, Int)] = mutable.Map()
@@ -504,14 +505,15 @@ final class TieredStorageTestBuilder {
   }
 
   def expectSegmentToBeOffloaded(fromBroker: Int, topic: String, partition: Int,
-                                 baseOffset: Int, recordCount: Int): this.type = {
+                                 baseOffset: Int, keyValues: (String, String)*): this.type = {
 
     val topicPartition = new TopicPartition(topic, partition)
-    val attrs = (fromBroker, baseOffset, recordCount)
+    val records = keyValues.map { case (key, value) => new ProducerRecord(topic, partition, key, value) }
+    val attrsAndRecords = (fromBroker, baseOffset, records)
 
     offloadables.get(topicPartition) match {
-      case Some(buffer) => buffer += attrs
-      case None => offloadables += topicPartition -> mutable.Buffer(attrs)
+      case Some(buffer) => buffer += attrsAndRecords
+      case None => offloadables += topicPartition -> mutable.Buffer(attrsAndRecords)
     }
 
     this
@@ -591,28 +593,17 @@ final class TieredStorageTestBuilder {
   }
 
   private def maybeCreateProduceAction(): Unit = {
-    /**
-      * Builds a specification of an offloaded segment.
-      * This method modifies this builder's sequence of records to produce.
-      */
-    def makeSpec(topicPartition: TopicPartition,
-                 records: mutable.Buffer[ProducerRecord[String, String]], attrs: (Int, Int, Int))
-    : OffloadedSegmentSpec = {
-
-      attrs match {
-        case (sourceBroker:Int, baseOffset: Int, expectedRecordCount: Int) =>
-          val offloadedRecords = (0 until Math.min(expectedRecordCount, records.length)).map(_ => records.remove(0))
-          new OffloadedSegmentSpec(sourceBroker, topicPartition, baseOffset, offloadedRecords)
-      }
-    }
-
     if (!producables.isEmpty) {
       producables.foreach {
         case (topicPartition, (records, batchSize, earliestOffsetInLogDirectory)) =>
           val recordsToProduce = Seq() ++ records
+
           val offloadedSegmentSpecs =
             offloadables.getOrElse(topicPartition, mutable.Buffer())
-            .map(makeSpec(topicPartition, records, _))
+            .map {
+              case (sourceBroker, baseOffset, records) =>
+                new OffloadedSegmentSpec(sourceBroker, topicPartition, baseOffset, records)
+            }
 
           actions += new ProduceAction(
             topicPartition, offloadedSegmentSpecs,recordsToProduce, batchSize, earliestOffsetInLogDirectory)
