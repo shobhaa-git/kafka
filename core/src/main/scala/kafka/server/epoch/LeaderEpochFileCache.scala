@@ -141,6 +141,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
           // Followers should not have any reason to query for the end offset of the current epoch, but a consumer
           // might if it is verifying its committed offset following a group rebalance. In this case, we return
           // the current log end offset which makes the truncation check work as expected.
+          println(epochs.map(g => s"(${g.epoch}, ${g.startOffset})").mkString(" "))
           (requestedEpoch, logEndOffset())
         } else {
           val (subsequentEpochs, previousEpochs) = epochs.partition { e => e.epoch > requestedEpoch}
@@ -154,10 +155,18 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
             // epochs in between, but the point is that the data has already been removed from the log
             // and we want to ensure that the follower can replicate correctly beginning from the leader's
             // start offset.
+
+            println(epochs.map(g => s"(${g.epoch}, ${g.startOffset})").mkString(" "))
+            println("Requested Epoch = " + requestedEpoch + " Subsequent Epoch start offset = " + subsequentEpochs.head.startOffset)
+
             (requestedEpoch, subsequentEpochs.head.startOffset)
           } else {
             // We have at least one previous epoch and one subsequent epoch. The result is the first
             // prior epoch and the starting offset of the first subsequent epoch.
+
+            println(epochs.map(g => s"(${g.epoch}, ${g.startOffset})").mkString(" "))
+            println("Requested Epoch = " + requestedEpoch + " Previous Epoch = " + previousEpochs.last.epoch + " Subsequent Epoch start offset = " + subsequentEpochs.head.startOffset)
+
             (previousEpochs.last.epoch, subsequentEpochs.head.startOffset)
           }
         }

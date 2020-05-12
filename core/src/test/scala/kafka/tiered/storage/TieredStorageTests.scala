@@ -284,43 +284,33 @@ object TieredStorageTests {
 //        .expectSegmentToBeOffloaded(follower, topicA, p0, baseOffset = 1, recordCount = 1)
 
       builder
-        .createTopic(topicA, partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 4, assignment)
-        .produce(topicA, p0, ("k1", "v1"))
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
-
+        .createTopic(topicA, partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 3, assignment)
         .stop(follower)
-        .produce(topicA, p0, ("k2", "v2"))
-        .withBatchSize(topicA, p0, 1)
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
+        .produce(topicA, p0, ("0.k1", "0.v1"))
 
         .stop(leader)
+        .pause()
         .start(follower)
-        .expectLeader(topicA, p0, follower)
-        .produce(topicA, p0, ("k3", "v3"))
-        .withBatchSize(topicA, p0, 1)
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
+        .produce(topicA, p0, ("1.k1", "1.v1"))
+        .bounce(follower)
+        .produce(topicA, p0, ("1.k2", "1.v2"))
 
         .stop(follower)
         .start(leader)
-        .expectLeader(topicA, p0, leader)
-        .produce(topicA, p0, ("k4", "v4"))
-        .withBatchSize(topicA, p0, 1)
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 0)
+        .produce(topicA, p0, ("0.k2", "0.v2"))
 
+        .pause()
         .stop(leader)
         .start(follower)
-        .expectLeader(topicA, p0, follower)
-        .produce(topicA, p0, ("k5", "v5"), ("k6", "v6"), ("k7", "v7"))
-        .withBatchSize(topicA, p0, 1)
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 4)
+        .produce(topicA, p0, ("1.k3", "1.v3"))
 
         .start(leader)
         .expectInIsr(topicA, p0, leader)
-        .expectLeader(topicA, p0, leader, electPreferredLeader = true)
-        .produce(topicA, p0, ("k8", "v8"), ("k9", "v9"), ("k10", "v10"))
-        .withBatchSize(topicA, p0, 1)
-        .expectEarliestOffsetInLogDirectory(topicA, p0, 4)
-        .expectSegmentToBeOffloaded(leader, topicA, p0, 0, 4)
+
+        .bounce(follower)
+
+
+
     }
   }
 
@@ -338,7 +328,8 @@ object TieredStorageTests {
       builder
         .createTopic("topicA", partitionsCount = 1, replicationFactor = 2, maxBatchCountPerSegment = 1)
         .expectLeader("topicA", partition = 0, brokerId = 0)
-        .expectInIsr("topicA", partition = 0, brokerId = 1)
+        .expectInIsr("topicA", partition
+          = 0, brokerId = 1)
         .produce("topicA", 0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
         .expectSegmentToBeOffloaded(fromBroker = 0, "topicA", partition = 0, baseOffset = 0, ("k1", "v1"))
         .expectSegmentToBeOffloaded(fromBroker = 0, "topicA", partition = 0, baseOffset = 1, ("k2", "v2"))

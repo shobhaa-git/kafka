@@ -435,14 +435,22 @@ final class ExpectBrokerInISR(val topicPartition: TopicPartition, replicaId: Int
   }
 }
 
+final class Pause extends TieredStorageTestAction {
+  override protected def doExecute(context: TieredStorageTestContext): Unit = {
+    println("phoque")
+  }
+
+  override def describe(output: PrintStream): Unit = output.println("pause")
+}
+
 /**
   * This builder helps to formulate a test case exercising the tiered storage functionality and formulate
   * the expectations following the execution of the test.
   */
 @nonthreadsafe
 final class TieredStorageTestBuilder {
-  private val defaultProducedBatchSize = Integer.MAX_VALUE
-  private val defaultEarliestOffsetExpectedInLogDirectory = -1
+  private val defaultProducedBatchSize = 1
+  private val defaultEarliestOffsetExpectedInLogDirectory = 0
 
   private var producables:
     mutable.Map[TopicPartition, (mutable.Buffer[ProducerRecord[String, String]], Int, Long)] = mutable.Map()
@@ -583,6 +591,11 @@ final class TieredStorageTestBuilder {
 
   def eraseBrokerStorage(brokerId: Int): this.type = {
     actions += new EraseBrokerStorageAction(brokerId)
+    this
+  }
+
+  def pause(): this.type = {
+    actions += new Pause
     this
   }
 

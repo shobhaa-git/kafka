@@ -505,14 +505,17 @@ abstract class AbstractFetcherThread(name: String,
 
       // get (leader epoch, end offset) pair that corresponds to the largest leader epoch
       // less than or equal to the requested epoch.
+      println(s"phoque off $tp broker ${sourceBroker.id}")
       endOffsetForEpoch(tp, leaderEpochOffset.leaderEpoch) match {
         case Some(OffsetAndEpoch(followerEndOffset, followerEpoch)) =>
+          println(s"replica phoque tp $tp  leaderEpochOffset $leaderEpochOffset follower end offset $followerEndOffset follower epoch $followerEpoch")
+
           if (followerEpoch != leaderEpochOffset.leaderEpoch) {
             // the follower does not know about the epoch that leader replied with
             // we truncate to the end offset of the largest epoch that is smaller than the
             // epoch the leader replied with, and send another offset for leader epoch request
             val intermediateOffsetToTruncateTo = min(followerEndOffset, replicaEndOffset)
-            info(s"Based on replica's leader epoch, leader replied with epoch ${leaderEpochOffset.leaderEpoch} " +
+            error(s"Based on replica's leader epoch, leader replied with epoch ${leaderEpochOffset.leaderEpoch} " +
               s"unknown to the replica for $tp. " +
               s"Will truncate to $intermediateOffsetToTruncateTo and send another leader epoch request to the leader.")
             OffsetTruncationState(intermediateOffsetToTruncateTo, truncationCompleted = false)
@@ -568,6 +571,8 @@ abstract class AbstractFetcherThread(name: String,
    * Handle a partition whose offset is out of range and return a new fetch offset.
    */
   protected def fetchOffsetAndTruncate(topicPartition: TopicPartition, currentLeaderEpoch: Int): PartitionFetchState = {
+    println("fetchOffsetAndTruncate")
+
     val replicaEndOffset = logEndOffset(topicPartition)
 
     /**
