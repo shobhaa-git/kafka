@@ -2018,7 +2018,12 @@ class Log(@volatile private var _dir: File,
   }
 
   private def deleteRetentionMsBreachedSegments(): Int = {
-    val retentionMs: Long = if (config.remoteStorageEnable) config.localRetentionMs else config.retentionMs
+
+    def localRetentionMs(): Long = {
+      if(config.remoteStorageEnable) config.localRetentionMs else config.retentionMs
+    }
+
+    val retentionMs = localRetentionMs()
     if (retentionMs < 0) return 0
     val startMs = time.milliseconds
 
@@ -2030,7 +2035,12 @@ class Log(@volatile private var _dir: File,
   }
 
   private def deleteRetentionSizeBreachedSegments(): Int = {
-    val retentionSize: Long = if (config.remoteStorageEnable) config.localRetentionBytes else config.retentionSize
+
+    def localRetentionSize(): Long = {
+      if(config.remoteStorageEnable) config.localRetentionBytes else config.retentionSize
+    }
+
+    val retentionSize:Long = localRetentionSize()
     if (retentionSize < 0 || size < retentionSize) return 0
     var diff = size - retentionSize
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
