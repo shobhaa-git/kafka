@@ -19,6 +19,7 @@ package kafka.server
 
 import java.util.Collections
 import java.util.Optional
+
 import kafka.api._
 import kafka.cluster.BrokerEndPoint
 import kafka.log.{LeaderOffsetIncremented, Log, LogAppendInfo}
@@ -39,12 +40,12 @@ import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.record.{MemoryRecords, Records}
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.server.log.remote.storage.{RemoteLogSegmentMetadata, RemoteStorageException}
+import org.apache.kafka.server.log.remote.storage.RemoteStorageException
 import org.apache.kafka.server.log.remote.storage.RemoteStorageManager.IndexType
-
 import java.io.{BufferedReader, InputStream, InputStreamReader}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, StandardCopyOption}
+
 import scala.jdk.CollectionConverters._
 import scala.collection.{Map, mutable}
 import scala.compat.java8.OptionConverters._
@@ -234,18 +235,22 @@ class ReplicaFetcherThread(name: String,
     }
   }
 
-  override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int): Long = {
+  override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition,
+                                                       currentLeaderEpoch: Int): (Int, Long) = {
     if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_8_IV1)
       fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP)
     else
       fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.EARLIEST_TIMESTAMP)
   }
 
-  override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int): Long = {
-    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.LATEST_TIMESTAMP)
+  override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition,
+                                                     currentLeaderEpoch: Int): Long = {
+    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.LATEST_TIMESTAMP)._2
   }
 
-  private def fetchOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int, earliestOrLatest: Long): Long = {
+  private def fetchOffsetFromLeader(topicPartition: TopicPartition,
+                                    currentLeaderEpoch: Int, earliestOrLatest: Long): (Int, Long) = {
+
     val topic = new ListOffsetsTopic()
       .setName(topicPartition.topic)
       .setPartitions(Collections.singletonList(
@@ -264,9 +269,10 @@ class ReplicaFetcherThread(name: String,
      Errors.forCode(responsePartition.errorCode) match {
       case Errors.NONE =>
         if (brokerConfig.interBrokerProtocolVersion >= KAFKA_0_10_1_IV2)
-          responsePartition.offset
+          (responsePartition.leaderEpoch, responsePartition.offset)
         else
-          responsePartition.oldStyleOffsets.get(0)
+          // There is no leader epoch before 0.10, so the returned epoch can be -1.
+          (-1, responsePartition.oldStyleOffsets.get(0))
       case error => throw error.exception
     }
   }
@@ -392,55 +398,140 @@ class ReplicaFetcherThread(name: String,
     !fetchState.isReplicaInSync && quota.isThrottled(topicPartition) && quota.isQuotaExceeded
   }
 
-  override protected def buildRemoteLogAuxState(partition: TopicPartition,
-                                                currentLeaderEpoch: Int,
-                                                leaderLocalLogStartOffset: Long,
-                                                leaderLogStartOffset: Long): Unit = {
+  /**
+    * Returns, if it exists, the epoch at which the given offset is defined on the leader. This method relies on
+    * an [[OffsetsForLeaderEpochRequest]] sent to the leader. If successful, a response with the tuple (LE, EO) is
+    * received, where:
+    *
+    * - LE is the largest leader epoch smaller than or equal to the epoch at the leader local log start offset - 1,
+    *   i.e. LE(ELO) - 1 where ELO stands for earliest local offset on the leader log.
+    * - EO is the end offset of the leader epoch LE, which is the start offset of the leader epoch immediately
+    *   following LE, i.e. ELO.
+    *
+    * We know that LE < LE(ELO) because we are requesting the end offset of the leader epoch  at LE(ELO) - 1
+    * Two cases to consider:
+    *
+    * - EO < ELO, in which case the search offset belongs to the leader epoch LE(ELO).
+    * - EO == searchOffset + 1 = ELO, in which case the search offset belongs to the leader epoch LE.
+    *
+    * @param partition The topic-partition targeted by the search.
+    * @param searchOffset The offset which leader epoch is requested from the leader of the topic-partition.
+    * @param epochForLeaderLocalLogStartOffset The epoch the local start offset is assigned to, LE(ELO).
+    * @param currentLeaderEpoch The current leader epoch (on the leader) of the topic-partition.
+    * @return If it is found, the leader epoch assigned to the search offset in the leader's log.
+    */
+  private[server] def findEpochForOffsetOnLeader(partition: TopicPartition,
+                                                 searchOffset: Long,
+                                                 epochForLeaderLocalLogStartOffset: Int,
+                                                 currentLeaderEpoch: Int): Option[Int] = {
+
+    if (epochForLeaderLocalLogStartOffset == 0) {
+      // The leader epoch at ELO is 0, hence any offset preceding ELO will also be assigned to the leader epoch 0.
+      // Return directly that leader epoch, because we want to avoid an OffsetsForLeaderEpoch request with - 1
+      // as a leader epoch, which is of reserved semantic in Kafka.
+      debug(s"Not fetching leader epoch for offset $searchOffset from leader as the leader epoch at ELO is 0")
+      Some(0)
+
+    } else {
+      val partitionsWithEpochs = Map(partition -> new EpochData()
+        .setPartition(partition.partition())
+        .setCurrentLeaderEpoch(currentLeaderEpoch)
+        .setLeaderEpoch(epochForLeaderLocalLogStartOffset - 1))
+
+      val maybeEpochEndOffset = fetchEpochEndOffsets(partitionsWithEpochs).get(partition)
+
+      maybeEpochEndOffset.flatMap { epochEndOffset =>
+        if (epochEndOffset.errorCode() != Errors.NONE.code())
+          None
+        else if (epochEndOffset.endOffset() > searchOffset)
+          Some(epochEndOffset.leaderEpoch())
+        else
+          Some(epochForLeaderLocalLogStartOffset)
+      }
+    }
+  }
+
+  /**
+    * Resolves the leader epoch map and producer snapshot of the given topic-partition from the data available in
+    * the remote storage. This method is called after the leader of the partition indicated that the last fetch
+    * offset used by this follower is present in the remote storage and not on the leader's local storage.
+    *
+    * The resolution happens by first retrieving the RemoteLogSegmentMetadata of the segment which contains
+    * the offset immediately preceding the local start offset on the leader log (also called earliest local
+    * offset ELO), ELO - 1. The leader epoch at ELO (LE(ELO)) has been provided to this method, however the
+    * leader epoch at ELO - 1 is unknown and need to be resolved from the leader. Once available, the remote log
+    * segment metadata can be found by invoking the plugin API with the offset ELO - 1 and leader epoch LE(ELO - 1).
+    * The leader epoch cache file and producer snapshot file are then downloaded from the remote storage and a
+    * local copy of them is kept.
+    *
+    * @param partition The topic-partition to reconstruct the state for.
+    * @param currentLeaderEpoch The current leader epoch (on the leader) of the topic-partition.
+    * @param leaderLocalLogStartOffset The local start offset of the log on the leader, ELO.
+    * @param epochForLeaderLocalLogStartOffset The epoch the local start offset is assigned to, LE(ELO).
+    * @param leaderLogStartOffset The start offset of the log, including the segments exclusively stored in the
+    *                             remote storage.
+    */
+  override protected[server] def buildRemoteLogAuxState(partition: TopicPartition,
+                                                        currentLeaderEpoch: Int,
+                                                        leaderLocalLogStartOffset: Long,
+                                                        epochForLeaderLocalLogStartOffset: Int,
+                                                        leaderLogStartOffset: Long): Unit = {
+
     replicaMgr.localLog(partition).foreach { log =>
       if (log.rlmEnabled && log.config.remoteStorageEnable) {
         replicaMgr.remoteLogManager.foreach { rlm =>
-          var rlsMetadata: Optional[RemoteLogSegmentMetadata] = Optional.empty()
-          val epoch = log.leaderEpochCache.flatMap(cache => cache.epochForOffset(leaderLocalLogStartOffset))
-          if (epoch.isDefined) {
-            rlsMetadata = rlm.fetchRemoteLogSegmentMetadata(partition, epoch.get, leaderLocalLogStartOffset)
-          } else {
-            // If epoch is not available, then it might be possible that this broker might lost its entire local storage.
-            // We may also have to build the leader epoch cache. To find out the remote log segment metadata for the
-            // leaderLocalLogStartOffset-1, start from the current leader epoch and subtract one to the epoch till
-            // finding the metadata.
-            var previousLeaderEpoch = currentLeaderEpoch
-            while (!rlsMetadata.isPresent && previousLeaderEpoch >= 0) {
-              rlsMetadata = rlm.fetchRemoteLogSegmentMetadata(partition, previousLeaderEpoch, leaderLocalLogStartOffset - 1)
-              previousLeaderEpoch -= 1
-            }
-          }
-          if (rlsMetadata.isPresent) {
-            val epochStream = rlm.storageManager().fetchIndex(rlsMetadata.get(), IndexType.LEADER_EPOCH)
-            val epochs = readLeaderEpochCheckpoint(epochStream)
 
-            // Truncate the existing local log before restoring the leader epoch cache and producer snapshots.
-            truncateFullyAndStartAt(partition, leaderLocalLogStartOffset)
+          // Assuming the log is correctly tiered, the last offset of the log as defined on the leader should
+          // be equal to the leader local log start offset (ELO) minus 1. This offset is what this broker needs
+          // to use to retrieve the metadata associated to the segment that contains it.
+          val latestTieredOffset = leaderLocalLogStartOffset - 1
 
-            log.maybeIncrementLogStartOffset(leaderLogStartOffset, LeaderOffsetIncremented)
-            epochs.foreach(epochEntry => {
-              log.leaderEpochCache.map(cache => cache.assign(epochEntry.epoch, epochEntry.startOffset))
-            })
-            info(s"Updated the epoch cache from remote tier till offset: $leaderLocalLogStartOffset " +
-              s"with size: ${epochs.size} for $partition")
+          // The leader epoch assigned to the search offset on the leader needs to be found.
+          // In the most general cases, it can be any epoch in the inclusive range [0, leader epoch at ELO].
+          //
+          // What to do if the leader epoch is not found? Can it be transient or permanent? Should the partition
+          // be marked as failed? In the current implementation, the truncation will fail and the follower will
+          // retry truncation forever, until this method succeeds.
+          val maybeLatestTieredEpoch = findEpochForOffsetOnLeader(
+            partition, latestTieredOffset, epochForLeaderLocalLogStartOffset, currentLeaderEpoch)
 
-            // restore producer snapshot
-            val snapshotFile = Log.producerSnapshotFile(log.dir, leaderLocalLogStartOffset)
-            Files.copy(rlm.storageManager().fetchIndex(rlsMetadata.get(), IndexType.PRODUCER_SNAPSHOT),
-              snapshotFile.toPath, StandardCopyOption.REPLACE_EXISTING)
-            log.producerStateManager.reloadSegments()
-            log.loadProducerState(leaderLocalLogStartOffset, reloadFromCleanShutdown = false)
-            info(s"Built the leader epoch cache and producer snapshots from remote tier for $partition. " +
-              s"Active producers: ${log.producerStateManager.activeProducers.size}, LeaderLogStartOffset: $leaderLogStartOffset")
-          } else {
-            throw new RemoteStorageException(s"Couldn't build the state from remote store for partition: $partition, " +
-              s"currentLeaderEpoch: $currentLeaderEpoch, leaderLocalLogStartOffset: $leaderLocalLogStartOffset, " +
-              s"leaderLogStartOffset: $leaderLogStartOffset, epoch: $epoch as the previous remote log segment " +
-              s"metadata was not found")
+          maybeLatestTieredEpoch match {
+            case Some(lookupEpoch) =>
+              rlm.fetchRemoteLogSegmentMetadata(partition, lookupEpoch, latestTieredOffset).asScala match {
+                case Some(rlsMetadata) =>
+                  val epochStream = rlm.storageManager().fetchIndex(rlsMetadata, IndexType.LEADER_EPOCH)
+                  val epochs = readLeaderEpochCheckpoint(epochStream)
+
+                  // Truncate the existing local log before restoring the leader epoch cache and producer snapshots.
+                  truncateFullyAndStartAt(partition, leaderLocalLogStartOffset)
+
+                  log.maybeIncrementLogStartOffset(leaderLogStartOffset, LeaderOffsetIncremented)
+                  epochs.foreach(epochEntry => {
+                    log.leaderEpochCache.map(cache => cache.assign(epochEntry.epoch, epochEntry.startOffset))
+                  })
+
+                  info(s"Updated the epoch cache from remote tier till offset: $leaderLocalLogStartOffset " +
+                    s"with size: ${epochs.size} for $partition")
+
+                  // restore producer snapshot
+                  val snapshotFile = Log.producerSnapshotFile(log.dir, leaderLocalLogStartOffset)
+                  Files.copy(rlm.storageManager().fetchIndex(rlsMetadata, IndexType.PRODUCER_SNAPSHOT),
+                    snapshotFile.toPath, StandardCopyOption.REPLACE_EXISTING)
+                  log.producerStateManager.reloadSegments()
+                  log.loadProducerState(leaderLocalLogStartOffset, reloadFromCleanShutdown = false)
+
+                  info(s"Built the leader epoch cache and producer snapshots from remote tier for $partition. " +
+                    s"Active producers: ${log.producerStateManager.activeProducers.size}, " +
+                    s"LeaderLogStartOffset: $leaderLogStartOffset")
+
+                case None =>
+                  throw new RemoteStorageException(s"Could not find remote metadata for $partition at offset " +
+                    s"$latestTieredOffset and leader epoch $lookupEpoch")
+              }
+
+            case None =>
+              throw new RemoteStorageException(s"Could not find the leader epoch of $partition at offset " +
+                s"$latestTieredOffset from its leader ${sourceBroker.id}")
           }
         }
       } else {
