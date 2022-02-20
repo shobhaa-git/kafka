@@ -481,10 +481,9 @@ class ReplicaFetcherThread(name: String,
       if (log.rlmEnabled && log.config.remoteStorageEnable) {
         replicaMgr.remoteLogManager.foreach { rlm =>
 
-          // Assuming the log is correctly tiered, the last offset of the log as defined on the leader should
-          // be equal to the leader local log start offset (ELO) minus 1. This offset is what this broker needs
-          // to use to retrieve the metadata associated to the segment that contains it.
-          val latestTieredOffset = leaderLocalLogStartOffset - 1
+          // Assuming the log is correctly tiered, the (leader local log start offset - 1) must be in the remote
+          // storage (though it may not be the last one, since the local and remote storage can overlap).
+          val tieredOffset = leaderLocalLogStartOffset - 1
 
           // The leader epoch assigned to the search offset on the leader needs to be found.
           // In the most general cases, it can be any epoch in the inclusive range [0, leader epoch at ELO].
@@ -492,12 +491,12 @@ class ReplicaFetcherThread(name: String,
           // What to do if the leader epoch is not found? Can it be transient or permanent? Should the partition
           // be marked as failed? In the current implementation, the truncation will fail and the follower will
           // retry truncation forever, until this method succeeds.
-          val maybeLatestTieredEpoch = findEpochForOffsetOnLeader(
-            partition, latestTieredOffset, epochForLeaderLocalLogStartOffset, currentLeaderEpoch)
+          val maybeTieredEpoch = findEpochForOffsetOnLeader(
+            partition, tieredOffset, epochForLeaderLocalLogStartOffset, currentLeaderEpoch)
 
-          maybeLatestTieredEpoch match {
+          maybeTieredEpoch match {
             case Some(lookupEpoch) =>
-              rlm.fetchRemoteLogSegmentMetadata(partition, lookupEpoch, latestTieredOffset).asScala match {
+              rlm.fetchRemoteLogSegmentMetadata(partition, lookupEpoch, tieredOffset).asScala match {
                 case Some(rlsMetadata) =>
                   val epochStream = rlm.storageManager().fetchIndex(rlsMetadata, IndexType.LEADER_EPOCH)
                   val epochs = readLeaderEpochCheckpoint(epochStream)
@@ -526,12 +525,12 @@ class ReplicaFetcherThread(name: String,
 
                 case None =>
                   throw new RemoteStorageException(s"Could not find remote metadata for $partition at offset " +
-                    s"$latestTieredOffset and leader epoch $lookupEpoch")
+                    s"$tieredOffset and leader epoch $lookupEpoch")
               }
 
             case None =>
               throw new RemoteStorageException(s"Could not find the leader epoch of $partition at offset " +
-                s"$latestTieredOffset from its leader ${sourceBroker.id}")
+                s"$tieredOffset from its leader ${sourceBroker.id}")
           }
         }
       } else {
