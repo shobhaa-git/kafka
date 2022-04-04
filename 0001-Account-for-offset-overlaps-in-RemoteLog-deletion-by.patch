@@ -1,0 +1,148 @@
+From ee858edbeec8a5bbffaebca1623e91e8179f3976 Mon Sep 17 00:00:00 2001
+From: Joel Wee <joelwee@amazon.com>
+Date: Wed, 30 Mar 2022 10:16:52 +0100
+Subject: [PATCH] Account for offset overlaps in RemoteLog deletion by size
+
+---
+ core/src/main/scala/kafka/log/Log.scala       | 30 ++++++++++++++++---
+ .../kafka/log/remote/RemoteLogManager.scala   | 14 ++++++++-
+ .../log/remote/RemoteLogManagerTest.scala     |  9 ++++--
+ 3 files changed, 45 insertions(+), 8 deletions(-)
+
+diff --git a/core/src/main/scala/kafka/log/Log.scala b/core/src/main/scala/kafka/log/Log.scala
+index c4f490c70b..ec2fd50af5 100644
+--- a/core/src/main/scala/kafka/log/Log.scala
++++ b/core/src/main/scala/kafka/log/Log.scala
+@@ -323,10 +323,12 @@ class Log(@volatile private var _dir: File,
+ 
+   @volatile var topicId : Uuid = Uuid.ZERO_UUID
+ 
+-  @volatile private var localLogStartOffset: Long = logStartOffset
++  @volatile private var _localLogStartOffset: Long = logStartOffset
+ 
+   @volatile private var highestOffsetWithRemoteIndex: Long = -1L
+ 
++  private[log] def localLogStartOffset: Long = _localLogStartOffset
++
+   private[kafka] def remoteLogEnabled(): Boolean = {
+     // remote logging is enabled only for non-compact and non-internal topics
+     rlmEnabled && !(config.compact || Topic.isInternal(topicPartition.topic())) && config.remoteStorageEnable
+@@ -871,7 +873,7 @@ class Log(@volatile private var _dir: File,
+   }
+ 
+   private def updateLocalLogStartOffset(offset: Long): Unit = {
+-    localLogStartOffset = offset
++    _localLogStartOffset = offset
+ 
+     if (highWatermark < offset) {
+       updateHighWatermark(offset)
+@@ -1455,7 +1457,7 @@ class Log(@volatile private var _dir: File,
+ 
+         checkIfMemoryMappedBufferClosed()
+         if (newLogStartOffset > logStartOffset) {
+-          localLogStartOffset = math.max(newLogStartOffset, localLogStartOffset)
++          _localLogStartOffset = math.max(newLogStartOffset, localLogStartOffset)
+ 
+           // it should always get updated  if tiered-storage is not enabled.
+           if (!onlyLocalLogStartOffsetUpdate || !remoteLogEnabled()) {
+@@ -2046,9 +2048,29 @@ class Log(@volatile private var _dir: File,
+ 
+   /**
+    * The size of the log in bytes
++   *
++   * WARNING: with remote storage enabled, this size may include segments with offsets < localLogStartOffset. These
++   * segments are defined to be "invalid" since they should not exist in the local log. Such segments can temporarily
++   * exist since the remote and local logs are not deleted in lock-step.
++   *
++   * For example, if a segment that exists both in local and remote storage is deleted in the remote storage,
++   * the localLogStartOffset will be updated to reflect that. However, this segment may not be deleted from local
++   * storage immediately.
++   *
++   * If you need a precise calculation of the valid segments in the local log, use the
++   * log#validLogSegmentsSize method instead.
++   *
+    */
+   def size: Long = Log.sizeInBytes(logSegments)
+ 
++  /**
++   * The size of the log in bytes for segments with offsets >= localLogStartOffset. Any segment with
++   * offset < localLogStartOffset is considered invalid since it should not be in the local log.
++   *
++   * See log#size for why such segments might exist
++   */
++  def validLogSegmentsSize: Long = Log.sizeInBytes(logSegments.filter(_.baseOffset >= localLogStartOffset))
++
+   /**
+    * The offset metadata of the next message that will be appended to the log
+    */
+@@ -2293,7 +2315,7 @@ class Log(@volatile private var _dir: File,
+             removeAndDeleteSegments(deletable, asyncDelete = true, LogTruncation)
+             activeSegment.truncateTo(targetOffset)
+ 
+-            this.localLogStartOffset = math.min(targetOffset, this.localLogStartOffset)
++            this._localLogStartOffset = math.min(targetOffset, this.localLogStartOffset)
+             updateLogStartOffset(math.min(this.localLogStartOffset, this.logStartOffset))
+ 
+             leaderEpochCache.foreach(_.truncateFromEnd(targetOffset))
+diff --git a/core/src/main/scala/kafka/log/remote/RemoteLogManager.scala b/core/src/main/scala/kafka/log/remote/RemoteLogManager.scala
+index 3c7b23cec6..c91728ae3d 100644
+--- a/core/src/main/scala/kafka/log/remote/RemoteLogManager.scala
++++ b/core/src/main/scala/kafka/log/remote/RemoteLogManager.scala
+@@ -510,6 +510,17 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
+         updateRemoteLogStartOffset(topicPartition, remoteLogStartOffset)
+       }
+ 
++      def totalLogSize(segmentMetadataList: scala.Seq[RemoteLogSegmentMetadata], log: Log): Long = {
++        val localLogStartOffset = log.localLogStartOffset // Cache the value
++        val remoteOnlyLogSize = segmentMetadataList
++          .filter(_.endOffset() < localLogStartOffset)
++          .map(_.segmentSizeInBytes()).sum
++
++        val localLogSize = log.validLogSegmentsSize
++
++        localLogSize + remoteOnlyLogSize
++      }
++
+       try {
+         // cleanup remote log segments and update the log start offset if applicable.
+         // Compute total size, this can be pushed to RLMM by introducing a new method instead of going through
+@@ -518,7 +529,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
+         if (segmentMetadataList.nonEmpty) {
+           fetchLog(tpId.topicPartition()).foreach { log =>
+             val retentionMs = log.config.retentionMs
+-            val totalSize = log.size + segmentMetadataList.map(_.segmentSizeInBytes()).sum
++            val totalSize = totalLogSize(segmentMetadataList, log)
++
+             val (checkTimestampRetention, cleanupTs) = (retentionMs > -1, time.milliseconds() - retentionMs)
+             val checkSizeRetention = log.config.retentionSize > -1
+             var remainingSize = totalSize - log.config.retentionSize
+diff --git a/core/src/test/scala/unit/kafka/log/remote/RemoteLogManagerTest.scala b/core/src/test/scala/unit/kafka/log/remote/RemoteLogManagerTest.scala
+index 2e4445a14a..3aa80ab342 100644
+--- a/core/src/test/scala/unit/kafka/log/remote/RemoteLogManagerTest.scala
++++ b/core/src/test/scala/unit/kafka/log/remote/RemoteLogManagerTest.scala
+@@ -538,8 +538,9 @@ class RemoteLogManagerTest {
+     epochCheckpoints.foreach { case (epoch, startOffset) => cache.assign(epoch, startOffset) }
+     val currentLeaderEpoch = epochCheckpoints.last._1
+ 
+-    val localLogSegmentsSize = 500L
+-    val retentionSize = (segmentCount - deletableSegmentCount) * 100 + localLogSegmentsSize
++    val overlappingLogSegmentsSize = 3 * recordsPerSegment
++    val localLogSegmentsSize = 500L + overlappingLogSegmentsSize
++    val retentionSize = (segmentCount - deletableSegmentCount) * 100 + (localLogSegmentsSize - overlappingLogSegmentsSize)
+     val logConfig: LogConfig = createMock(classOf[LogConfig])
+     expect(logConfig.retentionMs).andReturn(-1).anyTimes()
+     expect(logConfig.retentionSize).andReturn(retentionSize).anyTimes()
+@@ -547,7 +548,9 @@ class RemoteLogManagerTest {
+     val log: Log = createMock(classOf[Log])
+     expect(log.leaderEpochCache).andReturn(Option(cache)).anyTimes()
+     expect(log.config).andReturn(logConfig).anyTimes()
+-    expect(log.size).andReturn(localLogSegmentsSize).anyTimes()
++    expect(log.validLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
++    val localLogStartOffset = recordsPerSegment * segmentCount - overlappingLogSegmentsSize
++    expect(log.localLogStartOffset).andReturn(localLogStartOffset).anyTimes()
+ 
+     var logStartOffset: Option[Long] = None
+     val rsmManager: ClassLoaderAwareRemoteStorageManager = createMock(classOf[ClassLoaderAwareRemoteStorageManager])
+-- 
+2.35.1
+

@@ -1,0 +1,172 @@
+From 810ece7114e17ac47ff9956d8cdaadf18cdb5b25 Mon Sep 17 00:00:00 2001
+From: Divij Vaidya <diviv@amazon.com>
+Date: Mon, 4 Apr 2022 12:42:04 +0200
+Subject: [PATCH] Patch
+
+---
+ .../main/scala/kafka/cluster/Partition.scala  |  4 +--
+ core/src/main/scala/kafka/log/Log.scala       | 28 +++++++++++++------
+ .../src/main/scala/kafka/log/LogManager.scala |  9 ++++--
+ .../kafka/server/AbstractFetcherThread.scala  |  2 +-
+ .../server/ReplicaAlterLogDirsThread.scala    |  4 +--
+ .../kafka/server/ReplicaFetcherThread.scala   |  7 +++--
+ 6 files changed, 34 insertions(+), 20 deletions(-)
+
+diff --git a/core/src/main/scala/kafka/cluster/Partition.scala b/core/src/main/scala/kafka/cluster/Partition.scala
+index 39d07799bd..f932579b0c 100755
+--- a/core/src/main/scala/kafka/cluster/Partition.scala
++++ b/core/src/main/scala/kafka/cluster/Partition.scala
+@@ -1291,11 +1291,11 @@ class Partition(val topicPartition: TopicPartition,
+     * @param newOffset The new offset to start the log with
+     * @param isFuture True iff the truncation should be performed on the future log of this partition
+     */
+-  def truncateFullyAndStartAt(newOffset: Long, isFuture: Boolean): Unit = {
++  def truncateFullyAndStartAt(newOffset: Long, isFuture: Boolean, logStartOffset: Option[Long] = None): Unit = {
+     // The read lock is needed to prevent the follower replica from being truncated while ReplicaAlterDirThread
+     // is executing maybeReplaceCurrentWithFutureReplica() to replace follower replica with the future replica.
+     inReadLock(leaderIsrUpdateLock) {
+-      logManager.truncateFullyAndStartAt(topicPartition, newOffset, isFuture = isFuture)
++      logManager.truncateFullyAndStartAt(topicPartition, newOffset, isFuture = isFuture, logStartOffset)
+     }
+   }
+ 
+diff --git a/core/src/main/scala/kafka/log/Log.scala b/core/src/main/scala/kafka/log/Log.scala
+index ec2fd50af5..e79f51c63e 100644
+--- a/core/src/main/scala/kafka/log/Log.scala
++++ b/core/src/main/scala/kafka/log/Log.scala
+@@ -2333,29 +2333,39 @@ class Log(@volatile private var _dir: File,
+   }
+ 
+   /**
+-   *  Delete all data in the log and start at the new offset
++   * Delete all data in the log and start at the new offset
+    *
+-   *  @param newOffset The new offset to start the log with
++   * The caller of this function is responsible for providing a value for logStartOffset when it differs from
++   * newLocalLogStartOffset. This would manifest in a scenario when topic has remote log enabled, offsets before the
++   * localLogStartOffset may reside only in the remote log and not in local log. In such cases, the invariant that
++   * logStartOffset = localLogStartOffset does not hold true.
++   *
++   *  @param newLocalLogStartOffset The new offset to start the local log with. This offset becomes the local log start
++   *                                offset after truncation is complete.
++   *  @param logStartOffset Log start offset for the topic. Defaults to value of newLocalLogStartOffset if not set by
++   *                        the caller.
+    */
+-  def truncateFullyAndStartAt(newOffset: Long): Unit = {
++  def truncateFullyAndStartAt(newLocalLogStartOffset: Long, logStartOffset: Option[Long] = None): Unit = {
+     maybeHandleIOException(s"Error while truncating the entire log for $topicPartition in dir ${dir.getParent}") {
+-      debug(s"Truncate and start at offset $newOffset")
++      debug(s"Truncate and start at offset $newLocalLogStartOffset")
++
+       lock synchronized {
+         checkIfMemoryMappedBufferClosed()
+         removeAndDeleteSegments(logSegments, asyncDelete = true, LogTruncation)
+         addSegment(LogSegment.open(dir,
+-          baseOffset = newOffset,
++          baseOffset = newLocalLogStartOffset,
+           config = config,
+           time = time,
+           initFileSize = initFileSize,
+           preallocate = config.preallocate))
+         leaderEpochCache.foreach(_.clearAndFlush())
+-        producerStateManager.truncateFullyAndStartAt(newOffset)
++        producerStateManager.truncateFullyAndStartAt(newLocalLogStartOffset)
+ 
++        val newStartOffset = logStartOffset getOrElse newLocalLogStartOffset
+         completeTruncation(
+-          startOffset = newOffset,
+-          localLogStartOffset = newOffset,
+-          endOffset = newOffset
++          startOffset = newStartOffset,
++          localLogStartOffset = newLocalLogStartOffset,
++          endOffset = newLocalLogStartOffset
+         )
+       }
+     }
+diff --git a/core/src/main/scala/kafka/log/LogManager.scala b/core/src/main/scala/kafka/log/LogManager.scala
+index c6023b9286..14236db11d 100755
+--- a/core/src/main/scala/kafka/log/LogManager.scala
++++ b/core/src/main/scala/kafka/log/LogManager.scala
+@@ -575,10 +575,13 @@ class LogManager(logDirs: Seq[File],
+    * Delete all data in a partition and start the log at the new offset
+    *
+    * @param topicPartition The partition whose log needs to be truncated
+-   * @param newOffset The new offset to start the log with
++   * @param newLocalLogStartOffset The new offset to start the local log with
+    * @param isFuture True iff the truncation should be performed on the future log of the specified partition
++   * @param logStartOffset Log start offset for the topic. Note that localLogStartOffset may not be equal to
++   *                        LogStartOffset if the topic has RemoteLogEnabled
+    */
+-  def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean): Unit = {
++  def truncateFullyAndStartAt(topicPartition: TopicPartition, newLocalLogStartOffset: Long, isFuture: Boolean,
++                              logStartOffset: Option[Long] = None): Unit = {
+     val log = {
+       if (isFuture)
+         futureLogs.get(topicPartition)
+@@ -591,7 +594,7 @@ class LogManager(logDirs: Seq[File],
+       if (!isFuture)
+         abortAndPauseCleaning(topicPartition)
+       try {
+-        log.truncateFullyAndStartAt(newOffset)
++        log.truncateFullyAndStartAt(newLocalLogStartOffset, logStartOffset)
+         if (!isFuture)
+           maybeTruncateCleanerCheckpointToActiveSegmentBaseOffset(log, topicPartition)
+       } finally {
+diff --git a/core/src/main/scala/kafka/server/AbstractFetcherThread.scala b/core/src/main/scala/kafka/server/AbstractFetcherThread.scala
+index 6ccdfb256f..872c3e9af4 100755
+--- a/core/src/main/scala/kafka/server/AbstractFetcherThread.scala
++++ b/core/src/main/scala/kafka/server/AbstractFetcherThread.scala
+@@ -82,7 +82,7 @@ abstract class AbstractFetcherThread(name: String,
+ 
+   protected def truncate(topicPartition: TopicPartition, truncationState: OffsetTruncationState): Unit
+ 
+-  protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long): Unit
++  protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long, logStartOffset: Option[Long] = None): Unit
+ 
+   protected def buildFetch(partitionMap: Map[TopicPartition, PartitionFetchState]): ResultWithPartitions[Option[ReplicaFetch]]
+ 
+diff --git a/core/src/main/scala/kafka/server/ReplicaAlterLogDirsThread.scala b/core/src/main/scala/kafka/server/ReplicaAlterLogDirsThread.scala
+index f15bd8fd28..2bc5c7cca5 100644
+--- a/core/src/main/scala/kafka/server/ReplicaAlterLogDirsThread.scala
++++ b/core/src/main/scala/kafka/server/ReplicaAlterLogDirsThread.scala
+@@ -212,9 +212,9 @@ class ReplicaAlterLogDirsThread(name: String,
+     partition.truncateTo(truncationState.offset, isFuture = true)
+   }
+ 
+-  override protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long): Unit = {
++  override protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long, logStartOffset: Option[Long] = None): Unit = {
+     val partition = replicaMgr.getPartitionOrException(topicPartition)
+-    partition.truncateFullyAndStartAt(offset, isFuture = true)
++    partition.truncateFullyAndStartAt(offset, isFuture = true, logStartOffset)
+   }
+ 
+   private def nextReadyPartition(partitionMap: Map[TopicPartition, PartitionFetchState]): Option[(TopicPartition, PartitionFetchState)] = {
+diff --git a/core/src/main/scala/kafka/server/ReplicaFetcherThread.scala b/core/src/main/scala/kafka/server/ReplicaFetcherThread.scala
+index 7259a1cfd4..573d29866c 100644
+--- a/core/src/main/scala/kafka/server/ReplicaFetcherThread.scala
++++ b/core/src/main/scala/kafka/server/ReplicaFetcherThread.scala
+@@ -340,9 +340,10 @@ class ReplicaFetcherThread(name: String,
+         offsetTruncationState.offset)
+   }
+ 
+-  override protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long): Unit = {
++  override protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long,
++                                                 logStartOffset: Option[Long] = None): Unit = {
+     val partition = replicaMgr.getPartitionOrException(topicPartition)
+-    partition.truncateFullyAndStartAt(offset, isFuture = false)
++    partition.truncateFullyAndStartAt(offset, isFuture = false, logStartOffset)
+   }
+ 
+   override def fetchEpochEndOffsets(partitions: Map[TopicPartition, EpochData]): Map[TopicPartition, EpochEndOffset] = {
+@@ -502,7 +503,7 @@ class ReplicaFetcherThread(name: String,
+                   val epochs = readLeaderEpochCheckpoint(epochStream)
+ 
+                   // Truncate the existing local log before restoring the leader epoch cache and producer snapshots.
+-                  truncateFullyAndStartAt(partition, leaderLocalLogStartOffset)
++                  truncateFullyAndStartAt(partition, leaderLocalLogStartOffset, Some(leaderLogStartOffset))
+ 
+                   log.maybeIncrementLogStartOffset(leaderLogStartOffset, LeaderOffsetIncremented)
+                   epochs.foreach(epochEntry => {
+-- 
+2.35.1
+
