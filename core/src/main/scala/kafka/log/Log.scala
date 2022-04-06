@@ -2347,7 +2347,7 @@ class Log(@volatile private var _dir: File,
    */
   def truncateFullyAndStartAt(newLocalLogStartOffset: Long, logStartOffset: Option[Long] = None): Unit = {
     maybeHandleIOException(s"Error while truncating the entire log for $topicPartition in dir ${dir.getParent}") {
-      debug(s"Truncate and start at offset $newLocalLogStartOffset")
+      debug(s"Truncate and start at local offset $newLocalLogStartOffset for $topicPartition. Start offset $logStartOffset.")
 
       lock synchronized {
         checkIfMemoryMappedBufferClosed()
