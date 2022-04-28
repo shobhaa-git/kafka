@@ -32,7 +32,7 @@ class DeleteSegmentsByRetentionSizeTest extends TieredStorageTestHarness {
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 1, ("k2", "v2"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 2, ("k3", "v3"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 3)
+      .setEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 3)
       .updateTopicConfig(topicA, Map(TopicConfig.RETENTION_BYTES_CONFIG -> 1.toString), Seq.empty)
       .expectDeletionInRemoteStorage(broker0, topicA, p0, atMostDeleteSegmentCallCount = 3)
       .waitForRemoteLogSegmentDeletion(topicA)

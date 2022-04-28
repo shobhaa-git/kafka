@@ -190,7 +190,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
   }
 
   private val remoteLogStorageManager: ClassLoaderAwareRemoteStorageManager = createRemoteStorageManager()
-  val remoteLogMetadataManager: RemoteLogMetadataManager = createRemoteLogMetadataManager()
+  private val remoteLogMetadataManager: RemoteLogMetadataManager = createRemoteLogMetadataManager()
 
   private val indexCache = new RemoteIndexCache(remoteStorageManager = remoteLogStorageManager, logDir = logDir)
 
@@ -219,6 +219,10 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
   def storageManager(): RemoteStorageManager = {
     remoteLogStorageManager
+  }
+
+  def metadataManager(): RemoteLogMetadataManager = {
+    remoteLogMetadataManager
   }
 
   /**

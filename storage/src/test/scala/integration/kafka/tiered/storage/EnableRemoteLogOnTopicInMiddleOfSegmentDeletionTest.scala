@@ -34,7 +34,7 @@ class EnableRemoteLogOnTopicInMiddleOfSegmentDeletionTest extends TieredStorageT
         enableRemoteLogStorage = false)
       // send records to partition 0
       .produce(topicA, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 0)
+      .setEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 0)
       // logically deletes the segment by incrementing the log-start-offset checkpoint
       .deleteRecords(topicA, p0, beforeOffset = 1)
       // enable remote log storage
@@ -42,7 +42,7 @@ class EnableRemoteLogOnTopicInMiddleOfSegmentDeletionTest extends TieredStorageT
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 1, ("k2", "v2"))
       .produce(topicA, p0, ("k4", "v4"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 2, ("k3", "v3"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 3)
+      .setEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 3)
       .expectFetchFromTieredStorage(broker0, topicA, p0, remoteFetchRequestCount = 2)
       .consume(topicA, p0, fetchOffset = 0, expectedTotalRecord = 3, expectedRecordsFromSecondTier = 2)
   }

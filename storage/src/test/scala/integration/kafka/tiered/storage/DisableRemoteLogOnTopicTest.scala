@@ -38,18 +38,18 @@ class DisableRemoteLogOnTopicTest extends TieredStorageTestHarness {
       .produce(topicA, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 1, ("k2", "v2"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 2)
+      .setEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 2)
       // send records to partition 1
       .produce(topicA, p1, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
       .expectSegmentToBeOffloaded(broker1, topicA, p1, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(broker1, topicA, p1, baseOffset = 1, ("k2", "v2"))
-      .expectEarliestOffsetInLogDirectory(topicA, p1, earliestOffset = 2)
+      .setEarliestOffsetInLogDirectory(topicA, p1, earliestOffset = 2)
       // disable remote log storage
       .updateTopicConfig(topicA, Map(TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG -> "false"), Seq.empty)
       .produce(topicA, p0, ("k4", "v4"))
       .produce(topicA, p1, ("k4", "v4"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 2)
-      .expectEarliestOffsetInLogDirectory(topicA, p1, earliestOffset = 2)
+      .setEarliestOffsetInLogDirectory(topicA, p0, earliestOffset = 2)
+      .setEarliestOffsetInLogDirectory(topicA, p1, earliestOffset = 2)
       // read from the local-log-start-offset and verify that there no interactions with secondary storage
       .expectFetchFromTieredStorage(broker0, topicA, p0, remoteFetchRequestCount = 0)
       .consume(topicA, p0, fetchOffset = 2, expectedTotalRecord = 2, expectedRecordsFromSecondTier = 0)

@@ -55,7 +55,7 @@ class CanFetchFromTieredStorageAfterRecoveryOfLocalSegmentsTest extends TieredSt
       .withBatchSize(topicA, p0, 1)
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(broker0, topicA, p0, baseOffset = 1, ("k2", "v2"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, 2)
+      .setEarliestOffsetInLogDirectory(topicA, p0, 2)
 
       /*
        * (B.1) Stop B0 and read remote log segments from the leader replica which is expected

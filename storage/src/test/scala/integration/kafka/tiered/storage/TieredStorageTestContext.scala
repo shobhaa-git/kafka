@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit
 import kafka.admin.AdminUtils.assignReplicasToBrokers
 import kafka.admin.BrokerMetadata
 import kafka.log.Log
-import kafka.server.KafkaServer
+import kafka.log.remote.RemoteLogManager
+import kafka.server.{HostedPartition, KafkaServer}
 import kafka.utils.BrokerLocalStorage
 import kafka.utils.TestUtils
 import kafka.zk.KafkaZkClient
@@ -208,6 +209,18 @@ final class TieredStorageTestContext(private val zookeeperClient: KafkaZkClient,
   def getTieredStorages: Seq[LocalTieredStorage] = tieredStorages
 
   def getLocalStorages: Seq[BrokerLocalStorage] = localStorages
+
+  def getRemoteLogManager(brokerId: Int): RemoteLogManager = {
+    brokers(brokerId).remoteLogManager
+  }
+
+  def leaderEpoch(topicPartition: TopicPartition, leaderId: Int): Int = {
+    val leaderEpoch = brokers(leaderId).replicaManager.getPartition(topicPartition) match {
+      case HostedPartition.Online(partition) => partition.getLeaderEpoch
+      case _ => 1
+    }
+    leaderEpoch
+  }
 
   def admin() = adminClient
 

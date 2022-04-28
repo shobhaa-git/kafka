@@ -304,9 +304,9 @@ final class ProduceAction(val topicPartition: TopicPartition,
       }
   }
 
-  override def describe(output: PrintStream) = {
+  override def describe(output: PrintStream): Unit = {
     output.println(s"produce-records: $topicPartition")
-    recordsToProduce.foreach(record => output.println(s"    ${record}"))
+    recordsToProduce.foreach(record => output.println(s"    $record"))
     offloadedSegmentSpecs.foreach(spec => output.println(s"    $spec"))
   }
 
@@ -493,7 +493,7 @@ final class ExpectLeaderAction(val topicPartition: TopicPartition, val replicaId
       .find(info => info.partition() == topicPartition.partition())
 
     val targetReplicas = new util.ArrayList[Integer]()
-    targetReplicas.add(new Integer(replicaId))
+    targetReplicas.add(replicaId)
     partitionInfo.foreach(info => info.replicas().forEach(replica => {
       if (replica.id() != replicaId) {
         targetReplicas.add(replica.id())
@@ -501,6 +501,44 @@ final class ExpectLeaderAction(val topicPartition: TopicPartition, val replicaId
     }))
     val proposed = Map(topicPartition -> Optional.of(new NewPartitionReassignment(targetReplicas)))
     context.admin().alterPartitionReassignments(proposed.asJava)
+  }
+}
+
+final class ExpectSegmentToBeOffloadedAction(val topicPartition: TopicPartition, untilOffset: Long) extends TieredStorageTestAction {
+  override protected def doExecute(context: TieredStorageTestContext): Unit = {
+    Thread.sleep(10000)
+    TestUtils.waitUntilTrue(() => {
+      val topicResult = context.admin().describeTopics(List(topicPartition.topic).asJava).all.get.get(topicPartition.topic)
+      val topicIdPartition = new TopicIdPartition(topicResult.topicId, topicPartition)
+      val topicLeader = Option(topicResult.partitions.get(topicPartition.partition).leader()).get.id
+      //val leaderEpoch = context.leaderEpoch(topicPartition, topicLeader)
+      val rlm = context.getRemoteLogManager(topicLeader)
+      val remoteOffset = rlm.findHighestRemoteOffset(topicIdPartition)
+      println("blah " + remoteOffset)
+      untilOffset == rlm.findHighestRemoteOffset(topicIdPartition)
+    }, msg = s"blah2")
+  }
+
+  override def describe(output: PrintStream): Unit = ???
+}
+
+final class ExpectLogStartOffsetAction(val topicPartition: TopicPartition,
+                                       brokerId: Int,
+                                       expectedOffset: Long,
+                                       val isLocalOffset: Boolean = false) extends TieredStorageTestAction {
+  override protected def doExecute(context: TieredStorageTestContext): Unit = {
+    TestUtils.waitUntilTrue( () => {
+      val logStartOffset = context.log(brokerId, topicPartition) match {
+        case Some(log) => if (isLocalOffset) log.localLogStartOffset else log.logStartOffset
+        case None => throw new IllegalStateException("Unable to find log for topic:" + topicPartition)
+      }
+
+      expectedOffset == logStartOffset
+    }, msg = "blah")
+  }
+
+  override def describe(output: PrintStream): Unit = {
+    output.println(s"expect-log-start-offset: topic-partition $topicPartition broker-id: $brokerId log-start-offset: $expectedOffset")
   }
 }
 
@@ -667,9 +705,9 @@ final class TieredStorageTestBuilder {
                   replicaAssignment: Map[Int, Seq[Int]] = Map(),
                   enableRemoteLogStorage: Boolean = true): this.type = {
 
-    assert(maxBatchCountPerSegment >= 1, s"Segments size for topic ${topic} needs to be >= 1")
-    assert(partitionsCount >= 1, s"Partition count for topic ${topic} needs to be >= 1")
-    assert(replicationFactor >= 1, s"Replication factor for topic ${topic} needs to be >= 1")
+    assert(maxBatchCountPerSegment >= 1, s"Segments size for topic $topic needs to be >= 1")
+    assert(partitionsCount >= 1, s"Partition count for topic $topic needs to be >= 1")
+    assert(replicationFactor >= 1, s"Replication factor for topic $topic needs to be >= 1")
 
     maybeCreateProduceAction()
     maybeCreateConsumeActions()
@@ -677,6 +715,19 @@ final class TieredStorageTestBuilder {
     val assignment = if (replicaAssignment.isEmpty) None else Some(replicaAssignment)
     val properties = new Properties()
     properties.put(TopicConfig.REMOTE_LOG_STORAGE_ENABLE_CONFIG, enableRemoteLogStorage.toString)
+    //
+    // Ensure offset and time indexes are generated for every record.
+    //
+    properties.put(TopicConfig.INDEX_INTERVAL_BYTES_CONFIG, 1.toString)
+    //
+    // To verify records physically absent from Kafka's storage can be consumed via the second tier storage, we
+    // want to delete log segments as soon as possible. When tiered storage is active, an inactive log
+    // segment is not eligible for deletion until it has been offloaded, which guarantees all segments
+    // should be offloaded before deletion, and their consumption is possible thereafter.
+    //
+    properties.put(TopicConfig.LOCAL_LOG_RETENTION_BYTES_CONFIG, 1.toString)
+    properties.put(TopicConfig.RETENTION_BYTES_CONFIG, -1.toString)
+    properties.put(TopicConfig.SEGMENT_INDEX_BYTES_CONFIG, (12 * maxBatchCountPerSegment).toString)
     actions += new CreateTopicAction(TopicSpec(topic, partitionsCount, replicationFactor, maxBatchCountPerSegment, assignment, properties))
     this
   }
@@ -684,7 +735,7 @@ final class TieredStorageTestBuilder {
   def updateTopicConfig(topic: String,
                         configsToBeAdded: Map[String, String],
                         configsToBeDeleted: Seq[String]): this.type = {
-    assert(configsToBeAdded.nonEmpty || configsToBeDeleted.nonEmpty, s"Topic ${topic} configs shouldn't be empty")
+    assert(configsToBeAdded.nonEmpty || configsToBeDeleted.nonEmpty, s"Topic $topic configs shouldn't be empty")
     maybeCreateProduceAction()
     maybeCreateConsumeActions()
     actions += new UpdateTopicConfigAction(topic, configsToBeAdded, configsToBeDeleted)
@@ -700,7 +751,7 @@ final class TieredStorageTestBuilder {
 
   def produce(topic: String, partition: Int, keyValues: (String, String)*): this.type = {
     assert(partition >= 0, "Partition must be >= 0")
-    maybeCreateConsumeActions()
+    maybeCreateProduceAction()
 
     val p = getOrCreateProducable(topic, partition)
     keyValues.foreach {
@@ -720,7 +771,7 @@ final class TieredStorageTestBuilder {
     this
   }
 
-  def expectEarliestOffsetInLogDirectory(topic: String, partition: Int, earliestOffset: Long): this.type = {
+  def setEarliestOffsetInLogDirectory(topic: String, partition: Int, earliestOffset: Long): this.type = {
     assert(earliestOffset >= 0, "Record offset must be >= 0")
 
     val p = getOrCreateProducable(topic, partition)
@@ -731,6 +782,7 @@ final class TieredStorageTestBuilder {
 
   def expectSegmentToBeOffloaded(fromBroker: Int, topic: String, partition: Int,
                                  baseOffset: Int, keyValues: (String, String)*): this.type = {
+    actions += new ExpectSegmentToBeOffloadedAction(new TopicPartition(topic, partition), baseOffset + keyValues.size)
 
     val topicPartition = new TopicPartition(topic, partition)
     val records = keyValues.map { case (key, value) => new ProducerRecord(topic, partition, key, value) }
@@ -751,7 +803,7 @@ final class TieredStorageTestBuilder {
               expectedRecordsFromSecondTier: Int): this.type = {
 
     assert(partition >= 0, "Partition must be >= 0")
-    assert(fetchOffset >= 0, "Fecth offset must be >=0")
+    assert(fetchOffset >= 0, "Fetch offset must be >=0")
     assert(expectedTotalRecord >= 1, "Must read at least one record")
     assert(expectedRecordsFromSecondTier >= 0, "Expected read cannot be < 0")
     assert(expectedRecordsFromSecondTier <= expectedTotalRecord, "Cannot fetch more records than consumed")
@@ -771,6 +823,14 @@ final class TieredStorageTestBuilder {
 
   def expectInIsr(topic: String, partition: Int, brokerId: Int): this.type = {
     actions += new ExpectBrokerInISR(new TopicPartition(topic, partition), brokerId)
+    this
+  }
+
+  def expectLogStartOffset(topic: String, partition: Int,
+                           brokerId: Int,
+                           expectedLogStartOffset: Long,
+                           isLocalOffset: Boolean = false): this.type = {
+    actions += new ExpectLogStartOffsetAction(new TopicPartition(topic, partition), brokerId, expectedLogStartOffset, isLocalOffset)
     this
   }
 

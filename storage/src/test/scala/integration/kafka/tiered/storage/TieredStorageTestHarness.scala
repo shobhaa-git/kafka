@@ -38,7 +38,6 @@ import scala.util.{Failure, Success, Try}
   * Base class for integration tests exercising the tiered storage functionality in Apache Kafka.
   */
 abstract class TieredStorageTestHarness extends IntegrationTestHarness {
-
   protected def numMetadataPartitions: Int = 5
 
   override def generateConfigs: Seq[KafkaConfig] = {
@@ -75,7 +74,7 @@ abstract class TieredStorageTestHarness extends IntegrationTestHarness {
     // Note that this does not impact the eligibility of a log segment to be offloaded to the
     // second-tier storage.
     //
-    overridingProps.setProperty(KafkaConfig.LogCleanupIntervalMsProp, 1000.toString)
+    overridingProps.setProperty(KafkaConfig.LogCleanupIntervalMsProp, 100.toString)
 
     //
     // This can be customized to read remote log segments from followers.

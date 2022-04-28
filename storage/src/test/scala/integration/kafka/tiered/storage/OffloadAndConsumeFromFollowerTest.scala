@@ -55,7 +55,7 @@ class OffloadAndConsumeFromFollowerTest extends TieredStorageTestHarness {
       .produce(topicA, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
       .expectSegmentToBeOffloaded(leader, topicA, p0, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(leader, topicA, p0, baseOffset = 1, ("k2", "v2"))
-      .expectEarliestOffsetInLogDirectory(topicA, p0, 2)
+      .setEarliestOffsetInLogDirectory(topicA, p0, 2)
       .consume(topicA, p0, fetchOffset = 1, expectedTotalRecord = 2, expectedRecordsFromSecondTier = 1)
       .expectFetchFromTieredStorage(follower, topicA, 0, 1)
   }

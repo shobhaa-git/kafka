@@ -323,7 +323,7 @@ class Log(@volatile private var _dir: File,
 
   @volatile var topicId : Uuid = Uuid.ZERO_UUID
 
-  @volatile private var localLogStartOffset: Long = logStartOffset
+  @volatile var localLogStartOffset: Long = logStartOffset
 
   @volatile private var highestOffsetWithRemoteIndex: Long = -1L
 

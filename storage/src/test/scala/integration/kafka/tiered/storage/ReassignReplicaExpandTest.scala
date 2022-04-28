@@ -43,7 +43,7 @@ class ReassignReplicaExpandTest extends TieredStorageTestHarness {
       .produce(topicB, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"))
       .expectSegmentToBeOffloaded(broker0, topicB, p0, baseOffset = 0, ("k1", "v1"))
       .expectSegmentToBeOffloaded(broker0, topicB, p0, baseOffset = 1, ("k2", "v2"))
-      .expectEarliestOffsetInLogDirectory(topicB, p0, earliestOffset = 2)
+      .setEarliestOffsetInLogDirectory(topicB, p0, earliestOffset = 2)
       // expand the topicB RF=2, the newly created replica gets mapped to one of the metadata partition which is being
       // actively consumed by both the brokers.
       .reassignReplica(topicB, p0, replicaIds = Seq(broker0, broker1))
@@ -51,7 +51,7 @@ class ReassignReplicaExpandTest extends TieredStorageTestHarness {
       // produce some more events
       .produce(topicB, p0, ("k4", "v4"))
       // verify the earliest offset in local log dir
-      .expectEarliestOffsetInLogDirectory(topicB, p0, earliestOffset = 3)
+      .setEarliestOffsetInLogDirectory(topicB, p0, earliestOffset = 3)
       // consume from the beginning of the topic to read data from local and remote storage
       .expectFetchFromTieredStorage(broker1, topicB, p0, remoteFetchRequestCount = 3)
       .consume(topicB, p0, fetchOffset = 0, expectedTotalRecord = 4, expectedRecordsFromSecondTier = 3)

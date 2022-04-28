@@ -84,7 +84,7 @@ class OffloadAndConsumeFromLeaderTest extends TieredStorageTestHarness {
       .createTopic(topicB, partitionsCount = 1, replicationFactor = 1, maxBatchCountPerSegment = 2)
       .produce(topicB, p0, ("k1", "v1"), ("k2", "v2"), ("k3", "v3"), ("k4", "v4"), ("k5", "v5"))
       .withBatchSize(topicB, p0, 1)
-      .expectEarliestOffsetInLogDirectory(topicB, p0, 4)
+      .setEarliestOffsetInLogDirectory(topicB, p0, 4)
       .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 0, ("k1", "v1"), ("k2", "v2"))
       .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 2, ("k3", "v3"), ("k4", "v4"))
 
@@ -159,7 +159,7 @@ class OffloadAndConsumeFromLeaderTest extends TieredStorageTestHarness {
         ("k9", "v9"), ("k10", "v10"), ("k11", "v11"),    // Second batch B
         ("k12", "v12"), ("k13", "v13"), ("k14", "v14"))  // Third batch C
       .withBatchSize(topicB, p0, 3)
-      .expectEarliestOffsetInLogDirectory(topicB, p0, 11)
+      .setEarliestOffsetInLogDirectory(topicB, p0, 11)
       .expectSegmentToBeOffloaded(broker, topicB, p0, baseOffset = 4, ("k5", "v5"))
       .expectSegmentToBeOffloaded(
         broker, topicB, p0, baseOffset = 5,
