@@ -16,7 +16,6 @@
  */
 package kafka.log.remote
 
-import jdk.nashorn.internal.ir.annotations.Ignore
 import kafka.cluster.Partition
 import kafka.log._
 import kafka.server._
@@ -33,7 +32,7 @@ import org.apache.kafka.server.log.remote.storage._
 import org.easymock.{CaptureType, EasyMock}
 import org.easymock.EasyMock._
 import org.junit.jupiter.api.Assertions.{assertDoesNotThrow, assertEquals, assertFalse, assertThrows, assertTrue}
-import org.junit.jupiter.api.{AfterEach, Test}
+import org.junit.jupiter.api.{AfterEach, Disabled, Test}
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
 
@@ -538,7 +537,7 @@ class RemoteLogManagerTest {
   }
 
   // TODO-tiered: GrandCanyon-DP-4757
-  @Ignore
+  @Disabled
   @ParameterizedTest(name = "testDeleteLogSegmentDueToRetentionTimeBreach segmentCount={0} deletableSegmentCount={1}")
   @CsvSource(value = Array("50, 0", "50, 1", "50, 23", "50, 50"))
   def testDeleteLogSegmentDueToRetentionTimeBreach(segmentCount: Int, deletableSegmentCount: Int): Unit = {
@@ -661,8 +660,7 @@ class RemoteLogManagerTest {
     }
     verify(logConfig, log, rlmmManager, rsmManager)
   }
-
-  // TODO-tiered: GrandCanyon-DP-4757
+  
   @ParameterizedTest(name = "testDeleteLogSegmentDueToRetentionTimeAndSizeBreach segmentCount={0} deletableSegmentCountByTime={1} deletableSegmentCountBySize={2}")
   @CsvSource(value = Array("50, 0, 0", "50, 1, 5", "50, 23, 15", "50, 50, 50"))
   def testDeleteLogSegmentDueToRetentionTimeAndSizeBreach(segmentCount: Int,
