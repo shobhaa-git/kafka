@@ -272,6 +272,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           doHandleLeaderOrFollowerPartitions(topicIdPartition, _.convertToLeader(partition.getLeaderEpoch))
       }
     }
+    None
   }
 
   /**
