@@ -605,7 +605,7 @@ class AbstractFetcherThreadTest {
     val partition = new TopicPartition("topic", 0)
     var fetchedEarliestOffset = false
     val fetcher = new MockFetcherThread() {
-      override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): (Int, Long) = {
+      override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Option[kafka.server.OffsetAndEpoch] = {
         fetchedEarliestOffset = true
         throw new FencedLeaderEpochException(s"Epoch $leaderEpoch is fenced")
       }
@@ -1139,6 +1139,7 @@ class AbstractFetcherThreadTest {
 
     override def logEndOffset(topicPartition: TopicPartition): Long = replicaPartitionState(topicPartition).logEndOffset
 
+    @Override
     override def endOffsetForEpoch(topicPartition: TopicPartition, epoch: Int): Option[OffsetAndEpoch] = {
       val epochData = new EpochData()
         .setPartition(topicPartition.partition)
@@ -1295,10 +1296,10 @@ class AbstractFetcherThreadTest {
       }
     }
 
-    override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): (Int, Long) = {
+    override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Option[OffsetAndEpoch] = {
       val leaderState = leaderPartitionState(topicPartition)
       checkLeaderEpochAndThrow(leaderEpoch, leaderState)
-      (leaderState.epochAtLocalLogStartOffset, leaderState.localLogStartOffset)
+      Some(OffsetAndEpoch(leaderState.localLogStartOffset, leaderState.epochAtLocalLogStartOffset))
     }
 
     override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Long = {

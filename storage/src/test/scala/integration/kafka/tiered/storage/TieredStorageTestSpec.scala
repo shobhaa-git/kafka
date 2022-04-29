@@ -604,10 +604,19 @@ final class ExpectUserTopicMappedToMetadataPartitionsAction(val topic: String, v
   }
 }
 
-final class DeleteRecordsAction(partition: TopicPartition, beforeOffset: Int) extends TieredStorageTestAction {
+final class DeleteRecordsAction(partition: TopicPartition, beforeOffset: Int, expectedException: Option[Class[_]] = None) extends TieredStorageTestAction {
   override protected def doExecute(context: TieredStorageTestContext): Unit = {
     val recordsToDelete = Map(partition -> RecordsToDelete.beforeOffset(beforeOffset)).asJava
-    context.admin().deleteRecords(recordsToDelete).all().get
+    try {
+      context.admin().deleteRecords(recordsToDelete).all().get
+      expectedException.map(exp => fail("Expected exception: " + exp))
+    } catch {
+      case e: Throwable => {
+        if(expectedException.isDefined) {
+          assertEquals(expectedException.get, e.getCause.getClass, "Unexpected exception cause " + e.getCause)
+        }
+      }
+    }
   }
 
   override def describe(output: PrintStream): Unit = {
@@ -863,12 +872,12 @@ final class TieredStorageTestBuilder {
     this
   }
 
-  def deleteRecords(topic: String, partition: Int, beforeOffset: Int): this.type = {
+  def deleteRecords(topic: String, partition: Int, beforeOffset: Int, expectedException: Option[Class[_]] = None): this.type = {
     maybeCreateProduceAction()
     maybeCreateConsumeActions()
 
     val topicPartition = new TopicPartition(topic, partition)
-    actions += new DeleteRecordsAction(topicPartition, beforeOffset)
+    actions += new DeleteRecordsAction(topicPartition, beforeOffset, expectedException)
     this
   }
 

@@ -303,8 +303,8 @@ public class ReplicaFetcherThreadBenchmark {
         }
 
         @Override
-        public long fetchEarliestOffsetFromLeader(TopicPartition topicPartition, int currentLeaderEpoch) {
-            return 0;
+        public Option<OffsetAndEpoch> fetchEarliestOffsetFromLeader(TopicPartition topicPartition, int currentLeaderEpoch) {
+            return OptionConverters.toScala(Optional.of(new OffsetAndEpoch(0, 0)));
         }
 
         @Override

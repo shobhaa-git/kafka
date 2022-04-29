@@ -66,6 +66,7 @@ import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownMemberIdException;
 import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
+import org.apache.kafka.common.errors.UnsupportedActionForTopicException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.feature.Features;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsResponseData;
@@ -1979,7 +1980,7 @@ public class KafkaAdminClientTest {
             Map<TopicPartition, KafkaFuture<DeletedRecords>> values = results.lowWatermarks();
             KafkaFuture<DeletedRecords> myTopicPartition0Result = values.get(myTopicPartition0);
             long lowWatermark = myTopicPartition0Result.get().lowWatermark();
-            assertEquals(lowWatermark, 3);
+            assertEquals(3, lowWatermark);
 
             // "offset out of range" failure on records deletion for partition 1
             KafkaFuture<DeletedRecords> myTopicPartition1Result = values.get(myTopicPartition1);
@@ -5152,6 +5153,71 @@ public class KafkaAdminClientTest {
             // Validate response
             assertNotNull(result.all());
             TestUtils.assertFutureThrows(result.all(), Errors.REQUEST_TIMED_OUT.exception().getClass());
+        }
+    }
+
+    @Test
+    public void testDeleteRecordsUnsupportedForTopicWithRemoteStorageEnabledError() throws ExecutionException, InterruptedException {
+        TopicPartition topicPartitionWithRemoteStorageEnabled =
+                new TopicPartition("dummyTopicWithRemoteStorage-enabled", 0);
+        TopicPartition topicPartitionWithRemoteStorageDisabled =
+                new TopicPartition("dummyTopicWithRemoteStorage-disabled", 0);
+
+        try (AdminClientUnitTestEnv env = mockClientEnv()) {
+            DeleteRecordsResponseData m = new DeleteRecordsResponseData();
+            m.topics().add(
+                    new DeleteRecordsResponseData.DeleteRecordsTopicResult()
+                            .setName(topicPartitionWithRemoteStorageEnabled.topic())
+                            .setPartitions(
+                                    new DeleteRecordsResponseData.DeleteRecordsPartitionResultCollection(
+                                            asList(new DeleteRecordsResponseData.DeleteRecordsPartitionResult()
+                                                    .setPartitionIndex(topicPartitionWithRemoteStorageEnabled.partition())
+                                                    .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+                                                    .setErrorCode(Errors.UNSUPPORTED_ACTION_FOR_TOPIC.code())).iterator())));
+
+            m.topics().add(
+                    new DeleteRecordsResponseData.DeleteRecordsTopicResult()
+                            .setName(topicPartitionWithRemoteStorageDisabled.topic())
+                            .setPartitions(
+                                    new DeleteRecordsResponseData.DeleteRecordsPartitionResultCollection(
+                                            asList(new DeleteRecordsResponseData.DeleteRecordsPartitionResult()
+                                                    .setPartitionIndex(topicPartitionWithRemoteStorageEnabled.partition())
+                                                    .setLowWatermark(20L)
+                                                    .setErrorCode(Errors.NONE.code())).iterator())));
+
+            List<MetadataResponse.TopicMetadata> t = new ArrayList<>();
+            List<MetadataResponse.PartitionMetadata> p = new ArrayList<>();
+            p.add(new MetadataResponse.PartitionMetadata(Errors.UNSUPPORTED_ACTION_FOR_TOPIC, topicPartitionWithRemoteStorageEnabled,
+                    Optional.of(env.cluster().nodes().get(0).id()), Optional.of(5), singletonList(env.cluster().nodes().get(0).id()),
+                    singletonList(env.cluster().nodes().get(0).id()), Collections.emptyList()));
+            t.add(new MetadataResponse.TopicMetadata(Errors.UNSUPPORTED_ACTION_FOR_TOPIC,
+                    topicPartitionWithRemoteStorageEnabled.topic(), false, p));
+
+            p.clear();
+            p.add(new MetadataResponse.PartitionMetadata(Errors.NONE, topicPartitionWithRemoteStorageDisabled,
+                    Optional.of(env.cluster().nodes().get(0).id()), Optional.of(5), singletonList(env.cluster().nodes().get(0).id()),
+                    singletonList(env.cluster().nodes().get(0).id()), Collections.emptyList()));
+            t.add(new MetadataResponse.TopicMetadata(Errors.NONE, topicPartitionWithRemoteStorageDisabled.topic(), false, p));
+
+            env.kafkaClient().prepareResponse(RequestTestUtils.metadataResponse(
+                    env.cluster().nodes(),
+                    env.cluster().clusterResource().clusterId(),
+                    env.cluster().controller().id(), t));
+            env.kafkaClient().prepareResponse(new DeleteRecordsResponse(m));
+
+            Map<TopicPartition, RecordsToDelete> recordsToDelete = new HashMap<>();
+            recordsToDelete.put(topicPartitionWithRemoteStorageEnabled, RecordsToDelete.beforeOffset(10L));
+            recordsToDelete.put(topicPartitionWithRemoteStorageDisabled, RecordsToDelete.beforeOffset(20L));
+
+            DeleteRecordsResult results = env.adminClient().deleteRecords(recordsToDelete);
+
+            Map<TopicPartition, KafkaFuture<DeletedRecords>> values = results.lowWatermarks();
+            // assert that delete records is not a valid action of topics with remote-storage enabled
+            TestUtils.assertFutureThrows(values.get(topicPartitionWithRemoteStorageEnabled),
+                    UnsupportedActionForTopicException.class);
+            // assert that delete records still works for non-remote topics
+            final long lowWatermark = values.get(topicPartitionWithRemoteStorageDisabled).get().lowWatermark();
+            assertEquals(20L, lowWatermark);
         }
     }
 

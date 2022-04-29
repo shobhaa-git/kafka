@@ -236,7 +236,7 @@ class ReplicaFetcherThread(name: String,
   }
 
   override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition,
-                                                       currentLeaderEpoch: Int): (Int, Long) = {
+                                                       currentLeaderEpoch: Int): Option[OffsetAndEpoch] = {
     if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_8_IV1)
       fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP)
     else
@@ -245,11 +245,11 @@ class ReplicaFetcherThread(name: String,
 
   override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition,
                                                      currentLeaderEpoch: Int): Long = {
-    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.LATEST_TIMESTAMP)._2
+    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.LATEST_TIMESTAMP).get.offset
   }
 
   private def fetchOffsetFromLeader(topicPartition: TopicPartition,
-                                    currentLeaderEpoch: Int, earliestOrLatest: Long): (Int, Long) = {
+                                    currentLeaderEpoch: Int, earliestOrLatest: Long): Option[OffsetAndEpoch] = {
 
     val topic = new ListOffsetsTopic()
       .setName(topicPartition.topic)
@@ -269,10 +269,10 @@ class ReplicaFetcherThread(name: String,
      Errors.forCode(responsePartition.errorCode) match {
       case Errors.NONE =>
         if (brokerConfig.interBrokerProtocolVersion >= KAFKA_0_10_1_IV2)
-          (responsePartition.leaderEpoch, responsePartition.offset)
+          Some(OffsetAndEpoch(responsePartition.offset, responsePartition.leaderEpoch))
         else
           // There is no leader epoch before 0.10, so the returned epoch can be -1.
-          (-1, responsePartition.oldStyleOffsets.get(0))
+          Some(OffsetAndEpoch(responsePartition.oldStyleOffsets.get(0), -1))
       case error => throw error.exception
     }
   }

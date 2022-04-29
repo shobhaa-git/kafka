@@ -124,6 +124,7 @@ import org.apache.kafka.common.errors.UnsupportedCompressionTypeException;
 import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.errors.UnsupportedSaslMechanismException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.errors.UnsupportedActionForTopicException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -363,21 +364,22 @@ public enum Errors {
     INCONSISTENT_TOPIC_ID(103, "The log's topic ID did not match the topic ID in the request", InconsistentTopicIdException::new),
     INCONSISTENT_CLUSTER_ID(104, "The clusterId in the request does not match that found on the server", InconsistentClusterIdException::new),
     OFFSET_MOVED_TO_TIERED_STORAGE(105, "The requested offset is moved to tiered storage.",
-            OffsetMovedToTieredStorageException::new);
+            OffsetMovedToTieredStorageException::new),
+    UNSUPPORTED_ACTION_FOR_TOPIC(106, "The requested action is not supported on the topic.", UnsupportedActionForTopicException::new);
 
     private static final Logger log = LoggerFactory.getLogger(Errors.class);
 
-    private static Map<Class<?>, Errors> classToError = new HashMap<>();
-    private static Map<Short, Errors> codeToError = new HashMap<>();
+    private static final Map<Class<?>, Errors> CLASS_TO_ERROR = new HashMap<>();
+    private static final Map<Short, Errors> CODE_TO_ERROR = new HashMap<>();
 
     static {
         for (Errors error : Errors.values()) {
-            if (codeToError.put(error.code(), error) != null)
+            if (CODE_TO_ERROR.put(error.code(), error) != null)
                 throw new ExceptionInInitializerError("Code " + error.code() + " for error " +
                         error + " has already been used");
 
             if (error.exception != null)
-                classToError.put(error.exception.getClass(), error);
+                CLASS_TO_ERROR.put(error.exception.getClass(), error);
         }
     }
 
@@ -450,7 +452,7 @@ public enum Errors {
      * Throw the exception if there is one
      */
     public static Errors forCode(short code) {
-        Errors error = codeToError.get(code);
+        Errors error = CODE_TO_ERROR.get(code);
         if (error != null) {
             return error;
         } else {
@@ -466,7 +468,7 @@ public enum Errors {
     public static Errors forException(Throwable t) {
         Class<?> clazz = t.getClass();
         while (clazz != null) {
-            Errors error = classToError.get(clazz);
+            Errors error = CLASS_TO_ERROR.get(clazz);
             if (error != null)
                 return error;
             clazz = clazz.getSuperclass();

@@ -148,10 +148,10 @@ class ReplicaAlterLogDirsThread(name: String,
     }
   }
 
-  override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): (Int, Long) = {
+  override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Option[kafka.server.OffsetAndEpoch] = {
     val partition = replicaMgr.getPartitionOrException(topicPartition)
     val log = partition.localLogOrException
-    (log.leaderEpochCache.flatMap(_.epochForOffset(log.logStartOffset)).getOrElse(-1), log.logStartOffset)
+    Some(OffsetAndEpoch(log.logStartOffset, log.leaderEpochCache.flatMap(_.epochForOffset(log.logStartOffset)).getOrElse(-1)))
   }
 
   override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Long = {

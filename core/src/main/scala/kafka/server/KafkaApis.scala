@@ -131,6 +131,15 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataSupport.forwardingManager.isDefined && request.context.principalSerde.isPresent
   }
 
+  private def isRemoteStorageEnabledForTopic(topicPartition: TopicPartition): Boolean = {
+    replicaManager.logManager.getLog(topicPartition) match {
+      case Some(topicLog) =>
+        topicLog.remoteLogEnabled()
+      case None =>
+        throw new IllegalArgumentException(s"$topicPartition does not exist")
+    }
+  }
+
   private def maybeForwardToController(
     request: RequestChannel.Request,
     handler: RequestChannel.Request => Unit
@@ -1944,6 +1953,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val unauthorizedTopicResponses = mutable.Map[TopicPartition, DeleteRecordsPartitionResult]()
     val nonExistingTopicResponses = mutable.Map[TopicPartition, DeleteRecordsPartitionResult]()
+    val unsupportedActionResponses = mutable.Map[TopicPartition, DeleteRecordsPartitionResult]()
     val authorizedForDeleteTopicOffsets = mutable.Map[TopicPartition, Long]()
 
     val topics = deleteRecordsRequest.data.topics.asScala
@@ -1958,17 +1968,23 @@ class KafkaApis(val requestChannel: RequestChannel,
         unauthorizedTopicResponses += topicPartition -> new DeleteRecordsPartitionResult()
           .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
           .setErrorCode(Errors.TOPIC_AUTHORIZATION_FAILED.code)
-      else if (!metadataCache.contains(topicPartition))
+      else if (!metadataCache.contains(topicPartition) || !replicaManager.logManager.getLog(topicPartition).isDefined)
         nonExistingTopicResponses += topicPartition -> new DeleteRecordsPartitionResult()
           .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
           .setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
-      else
+      else if (isRemoteStorageEnabledForTopic(topicPartition)) {
+        // TODO: Implement delete record API for topics with remote storage enabled. Until then, disable this API
+        // for such topics.
+        unsupportedActionResponses += topicPartition -> new DeleteRecordsPartitionResult()
+        .setLowWatermark(DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+        .setErrorCode(Errors.UNSUPPORTED_ACTION_FOR_TOPIC.code)
+      } else
         authorizedForDeleteTopicOffsets += (topicPartition -> offset)
     }
 
     // the callback for sending a DeleteRecordsResponse
     def sendResponseCallback(authorizedTopicResponses: Map[TopicPartition, DeleteRecordsPartitionResult]): Unit = {
-      val mergedResponseStatus = authorizedTopicResponses ++ unauthorizedTopicResponses ++ nonExistingTopicResponses
+      val mergedResponseStatus = authorizedTopicResponses ++ unauthorizedTopicResponses ++ nonExistingTopicResponses ++ unsupportedActionResponses
       mergedResponseStatus.forKeyValue { (topicPartition, status) =>
         if (status.errorCode != Errors.NONE.code) {
           debug("DeleteRecordsRequest with correlation id %d from client %s on partition %s failed due to %s".format(
