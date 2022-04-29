@@ -23,6 +23,7 @@ import kafka.log.CleanerConfig;
 import kafka.log.Defaults;
 import kafka.log.LogConfig;
 import kafka.log.LogManager;
+import kafka.log.remote.RemoteLogManager;
 import kafka.server.AlterIsrManager;
 import kafka.server.BrokerTopicStats;
 import kafka.server.KafkaConfig;
@@ -44,6 +45,7 @@ import org.apache.kafka.common.message.LeaderAndIsrRequestData;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.server.log.remote.storage.RemoteLogManagerConfig;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -136,7 +138,8 @@ public class PartitionCreationBench {
                 brokerTopicStats,
                 failureChannel,
                 Time.SYSTEM,
-                true);
+                true,
+                new RemoteLogManagerConfig(new Properties()));
         scheduler.startup();
         final MetadataCache metadataCache =
                 new ZkMetadataCache(this.brokerProperties.brokerId());
@@ -159,6 +162,7 @@ public class PartitionCreationBench {
                 Option.apply(zkClient),
                 this.scheduler,
                 this.logManager,
+                Option.<RemoteLogManager>empty(),
                 new AtomicBoolean(false),
                 this.quotaManagers,
                 brokerTopicStats,
@@ -166,7 +170,7 @@ public class PartitionCreationBench {
                 this.failureChannel,
                 alterIsrManager,
                 configRepository,
-                Option.empty());
+                Option.<String>empty());
         replicaManager.startup();
         replicaManager.checkpointHighWatermarks();
     }
