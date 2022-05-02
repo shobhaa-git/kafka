@@ -276,8 +276,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
   }
 
   /**
-   * Stops partitions for copying segments, building indexes and deletes the partition in remote storage if delete flag
-   * is set as true.
+   * Stops partitions for copying segments, building indexes.
    *
    * @param allPartitions  topic partitions that needs to be stopped.
    * @param delete      flag to indicate whether the given topic partitions to be deleted or not.
@@ -314,6 +313,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
       // NOTE: this#stopPartitions method is called when Replica state changes to Offline and ReplicaDeletionStarted
       remoteLogMetadataManager.onStopPartitions(tpIds.asJava)
       topicPartitionIds --= allPartitions
+      indexCache.removeIndexEntriesForDeletedTopicIdPartitions(tpIds)
     }
   }
 

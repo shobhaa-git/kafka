@@ -514,8 +514,7 @@ class ReplicaManager(val config: KafkaConfig,
     // Third delete the logs and checkpoint.
     val errorMap = new mutable.HashMap[TopicPartition, Throwable]()
     val remoteStorageErrorHandler: (TopicPartition, Throwable) => Unit =
-      (tp, e) => error(s"Error while stopping/deleting the remote log partition: $tp. " +
-        s"This can cause dangling log segments in the remote storage", e)
+      (tp, e) => error(s"Error while stopping the remote log partition: $tp. ", e)
     if (partitionsToDelete.nonEmpty) {
       // Delete the logs and checkpoint.
       logManager.asyncDelete(partitionsToDelete, (tp, e) => errorMap.put(tp, e))

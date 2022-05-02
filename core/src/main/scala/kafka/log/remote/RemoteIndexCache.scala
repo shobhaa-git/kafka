@@ -19,14 +19,18 @@ package kafka.log.remote
 import java.io.{File, InputStream}
 import java.nio.file.{Files, Path}
 import java.util
+import java.util.stream.Collectors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kafka.log.{CleanableIndex, Log, OffsetIndex, OffsetPosition, TimeIndex, TransactionIndex, TxnIndexSearchResult}
 import kafka.utils.{CoreUtils, Logging}
+import org.apache.kafka.common.TopicIdPartition
 import org.apache.kafka.common.errors.CorruptRecordException
 import org.apache.kafka.common.utils.{KafkaThread, Utils}
 import org.apache.kafka.server.log.remote.storage.RemoteStorageManager.IndexType
 import org.apache.kafka.server.log.remote.storage.{RemoteLogSegmentId, RemoteLogSegmentMetadata, RemoteResourceNotFoundException, RemoteStorageManager}
+
+import scala.jdk.CollectionConverters._
 
 object RemoteIndexCache {
   val DirName = "remote-log-index-cache"
@@ -218,6 +222,38 @@ class RemoteIndexCache(maxSize: Int = 1024, remoteStorageManager: RemoteStorageM
 
     maxOffset.map(x => entry.txnIndex.collectAbortedTxns(startOffset, x))
       .getOrElse(TxnIndexSearchResult(List.empty, isComplete = false))
+  }
+
+  def removeIndexEntriesForDeletedTopicIdPartitions(topicIdPartitions: Set[TopicIdPartition]): Unit = {
+
+    info(s"Removing RemoteIndexCache for topic partitions: $topicIdPartitions")
+
+    val topicIdPartitionsToDelete = topicIdPartitions.asJava
+    // Find the map entries to delete from the expired indices -> Key-Value pair of [RemoteLogSegmentId]:[Entry]
+    val entriesToDelete = entries.entrySet()
+      .stream()
+      .filter(mapEntry => topicIdPartitionsToDelete.contains(mapEntry.getKey().topicIdPartition()))
+      .collect(Collectors.toSet())
+
+    // Find the entry values to delete [Entry] -> (OffsetIndex, TimeIndex, TransactionIndex)
+    val entryValuesToDelete = entriesToDelete
+      .stream()
+      .map(mapEntry => mapEntry.getValue())
+      .collect(Collectors.toSet())
+
+    // Add the "to-be" deleted entries to the expired indices for further clean up by cleaner thread
+    expiredIndexes.addAll(entryValuesToDelete)
+
+    // Find the entry keys to delete from the in-memory LRU cache [RemoteLogSegmentId]
+    val entryKeysToDelete = entriesToDelete
+      .stream()
+      .map(mapEntry => mapEntry.getKey())
+      .collect(Collectors.toSet())
+
+    lock synchronized {
+      // Remove the entry keys from the LRU cache
+      entries.keySet().removeAll(entryKeysToDelete)
+    }
   }
 
   def close(): Unit = {

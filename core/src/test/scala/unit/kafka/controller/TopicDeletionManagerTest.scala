@@ -16,21 +16,29 @@
  */
 package kafka.controller
 
+import kafka.log.remote.{MockRemoteLogManager, RemoteLogManager}
 import kafka.cluster.{Broker, EndPoint}
 import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.apache.kafka.server.log.remote.storage.{RemoteLogMetadataManager, RemoteStorageException}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito._
+import org.mockito.ArgumentMatchers.any
+
+import java.nio.file.{Files, Path}
+import java.util.Properties
 
 class TopicDeletionManagerTest {
 
   private val brokerId = 1
   private val config = KafkaConfig.fromProps(TestUtils.createBrokerConfig(brokerId, "zkConnect"))
   private val deletionClient = mock(classOf[DeletionClient])
+  private val logDir: Path = Files.createTempDirectory("kafka-test-")
+  private val remoteLogManager = new MockRemoteLogManager(2, 10, logDir.toString)
 
   @Test
   def testInitialization(): Unit = {
@@ -47,7 +55,7 @@ class TopicDeletionManagerTest {
     partitionStateMachine.startup()
 
     val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
-      partitionStateMachine, deletionClient)
+      partitionStateMachine, deletionClient, None)
 
     assertTrue(deletionManager.isDeleteTopicEnabled)
     deletionManager.init(initialTopicsToBeDeleted = Set("foo", "bar"), initialTopicsIneligibleForDeletion = Set("bar", "baz"))
@@ -70,7 +78,7 @@ class TopicDeletionManagerTest {
     partitionStateMachine.startup()
 
     val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
-      partitionStateMachine, deletionClient)
+      partitionStateMachine, deletionClient, None)
     assertTrue(deletionManager.isDeleteTopicEnabled)
     deletionManager.init(Set.empty, Set.empty)
 
@@ -130,7 +138,7 @@ class TopicDeletionManagerTest {
     partitionStateMachine.startup()
 
     val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
-      partitionStateMachine, deletionClient)
+      partitionStateMachine, deletionClient, None)
     assertTrue(deletionManager.isDeleteTopicEnabled)
     deletionManager.init(Set.empty, Set.empty)
 
@@ -198,7 +206,7 @@ class TopicDeletionManagerTest {
     partitionStateMachine.startup()
 
     val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
-      partitionStateMachine, deletionClient)
+      partitionStateMachine, deletionClient, None)
     deletionManager.init(Set.empty, Set.empty)
 
     val fooPartitions = controllerContext.partitionsForTopic("foo")
@@ -243,6 +251,156 @@ class TopicDeletionManagerTest {
     assertEquals(onlineReplicas, controllerContext.replicasInState("foo", ReplicaDeletionSuccessful))
     assertEquals(offlineReplicas, controllerContext.replicasInState("foo", ReplicaDeletionStarted))
 
+  }
+
+  // Tiered storage - Success case for RLMM.putRemotePartitionDeleteMetadata invocations
+  @Test
+  def testPutRemotePartitionDeleteMetadataAndCompleteDeletion(): Unit = {
+    val topic = "foo"
+    val topics = Set(topic)
+    val controllerContext = initContext(
+      brokers = Seq(1, 2, 3),
+      topics = topics,
+      numPartitions = 2,
+      replicationFactor = 3)
+    controllerContext.setAllTopics(topics)
+    controllerContext.addTopicId(topic, Uuid.randomUuid())
+
+    when(deletionClient.getTopicProperties(any)).thenReturn(new Properties())
+
+    val replicaStateMachine = new MockReplicaStateMachine(controllerContext)
+    replicaStateMachine.startup()
+
+    val partitionStateMachine = new MockPartitionStateMachine(controllerContext, uncleanLeaderElectionEnabled = false)
+    partitionStateMachine.startup()
+
+    val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
+      partitionStateMachine, deletionClient, Some(remoteLogManager))
+    assertTrue(deletionManager.isDeleteTopicEnabled)
+    deletionManager.init(Set.empty, Set.empty)
+
+    val fooPartitions = controllerContext.partitionsForTopic(topic)
+
+    // Clean up state changes before starting the deletion
+    replicaStateMachine.clear()
+    partitionStateMachine.clear()
+
+    assertTrue(controllerContext.topicIds.get(topic).nonEmpty)
+
+    // Trigger the remote deletion
+    val topicPartitionsInError = deletionManager
+      .putRemotePartitionDeleteMetadata(topic, Option.apply(Uuid.randomUuid()), fooPartitions)
+
+    // Ensure that the topics are cleared from controller context
+    assertTrue(topicPartitionsInError.isEmpty)
+    assertEquals(Set(), controllerContext.topicsToBeDeleted)
+    assertEquals(Set(), controllerContext.topicsWithDeletionStarted)
+    assertEquals(Set(), controllerContext.topicsIneligibleForDeletion)
+  }
+
+  // Tiered storage - Failure case for RLMM.putRemotePartitionDeleteMetadata invocations
+  @Test
+  def testPutRemotePartitionDeleteMetadataAndCompleteDeletionWhenRLMMThrowsError(): Unit = {
+    val topic = "foo"
+    val topics = Set(topic)
+    val controllerContext = initContext(
+      brokers = Seq(1, 2, 3),
+      topics = topics,
+      numPartitions = 2,
+      replicationFactor = 3)
+    controllerContext.setAllTopics(topics)
+    controllerContext.addTopicId(topic, Uuid.randomUuid())
+
+    val remoteLogMetadataManager = mock(classOf[RemoteLogMetadataManager])
+    val remoteLogManager = mock(classOf[RemoteLogManager])
+    when(remoteLogManager.remoteLogMetadataManager).thenReturn(remoteLogMetadataManager)
+    when(remoteLogMetadataManager.putRemotePartitionDeleteMetadata(any))
+      .thenThrow(new RemoteStorageException("exception"))
+    when(deletionClient.getTopicProperties(any)).thenReturn(new Properties())
+
+    val replicaStateMachine = new MockReplicaStateMachine(controllerContext)
+    replicaStateMachine.startup()
+
+    val partitionStateMachine = new MockPartitionStateMachine(controllerContext, uncleanLeaderElectionEnabled = false)
+    partitionStateMachine.startup()
+
+    val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
+      partitionStateMachine, deletionClient, Some(remoteLogManager))
+    assertTrue(deletionManager.isDeleteTopicEnabled)
+    deletionManager.init(Set.empty, Set.empty)
+
+    val fooPartitions = controllerContext.partitionsForTopic(topic)
+
+    // Clean up state changes before starting the deletion
+    replicaStateMachine.clear()
+    partitionStateMachine.clear()
+
+    assertTrue(controllerContext.topicIds.get(topic).nonEmpty)
+
+    // Trigger the remote deletion
+    deletionManager.enqueueTopicsForDeletion(topics)
+    val topicPartitionsInError = deletionManager
+      .putRemotePartitionDeleteMetadata(topic, Option.apply(Uuid.randomUuid()), fooPartitions)
+
+    // Ensure that the topics are cleared from controller context
+    assertEquals(fooPartitions, topicPartitionsInError)
+
+    // Topics will not be cleared yet as the remote deletions are pending
+    assertEquals(fooPartitions, controllerContext.partitionsForTopic(topic))
+    assertEquals(Set(topic), controllerContext.topicsToBeDeleted)
+    assertEquals(Set(topic), controllerContext.topicsWithDeletionStarted)
+    assertEquals(Set(), controllerContext.topicsIneligibleForDeletion)
+  }
+
+  // Tiered storage - No initial RLMM.putRemotePartitionDeleteMetadata invocations
+  @Test
+  def testResumeDeletionsSkipCompletingDeletionForRemoteLogMetadataCalls(): Unit = {
+    val topic = "foo"
+    val controllerContext = initContext(
+      brokers = Seq(1, 2, 3),
+      topics = Set(topic),
+      numPartitions = 2,
+      replicationFactor = 3)
+    val replicaStateMachine = new MockReplicaStateMachine(controllerContext)
+    replicaStateMachine.startup()
+
+    when(deletionClient.getTopicProperties(any)).thenReturn(new Properties())
+
+    val partitionStateMachine = new MockPartitionStateMachine(controllerContext, uncleanLeaderElectionEnabled = false)
+    partitionStateMachine.startup()
+
+    val deletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
+      partitionStateMachine, deletionClient, Some(remoteLogManager))
+    assertTrue(deletionManager.isDeleteTopicEnabled)
+    deletionManager.init(Set.empty, Set.empty)
+
+    val fooPartitions = controllerContext.partitionsForTopic(topic)
+    val fooReplicas = controllerContext.replicasForPartition(fooPartitions).toSet
+
+    // Clean up state changes before starting the deletion
+    replicaStateMachine.clear()
+    partitionStateMachine.clear()
+
+    // Queue the topic for deletion
+    deletionManager.enqueueTopicsForDeletion(Set(topic))
+
+    assertEquals(fooPartitions, controllerContext.partitionsInState(topic, NonExistentPartition))
+    assertEquals(fooReplicas, controllerContext.replicasInState(topic, ReplicaDeletionStarted))
+    verify(deletionClient).sendMetadataUpdate(fooPartitions)
+    assertEquals(Set(topic), controllerContext.topicsToBeDeleted)
+    assertEquals(Set(topic), controllerContext.topicsWithDeletionStarted)
+    assertEquals(Set(), controllerContext.topicsIneligibleForDeletion)
+
+    // Complete the deletion
+    deletionManager.completeReplicaDeletion(fooReplicas)
+
+    // There will be a controller call to start the deletion process
+    verify(deletionClient).sendRemotePartitionDeleteMetadata(topic, fooPartitions)
+    // Topics will not be cleared yet as the remote deletions are pending
+    assertEquals(fooPartitions, controllerContext.partitionsForTopic(topic))
+    assertEquals(Set(topic), controllerContext.topicsToBeDeleted)
+    assertEquals(Set(topic), controllerContext.topicsWithDeletionStarted)
+    assertEquals(Set(), controllerContext.topicsIneligibleForDeletion)
   }
 
   def initContext(brokers: Seq[Int],

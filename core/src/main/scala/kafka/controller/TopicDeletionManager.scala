@@ -16,10 +16,19 @@
  */
 package kafka.controller
 
+import java.util.Properties
+import kafka.log.remote.RemoteLogManager
+import kafka.log.LogConfig
 import kafka.server.KafkaConfig
+import kafka.utils.Implicits._
 import kafka.utils.Logging
-import kafka.zk.KafkaZkClient
-import org.apache.kafka.common.TopicPartition
+import kafka.zk.{AdminZkClient, KafkaZkClient}
+import kafka.server.metadata.ZkConfigRepository
+import org.apache.kafka.common.internals.Topic
+import org.apache.kafka.common.utils.Time
+import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
+import org.apache.kafka.server.log.remote.metadata.storage.TopicBasedRemoteLogMetadataManagerConfig
+import org.apache.kafka.server.log.remote.storage.{RemotePartitionDeleteMetadata, RemotePartitionDeleteState, RemoteStorageException}
 
 import scala.collection.Set
 import scala.collection.mutable
@@ -29,9 +38,14 @@ trait DeletionClient {
   def deleteTopicDeletions(topics: Seq[String], epochZkVersion: Int): Unit
   def mutePartitionModifications(topic: String): Unit
   def sendMetadataUpdate(partitions: Set[TopicPartition]): Unit
+  def sendRemotePartitionDeleteMetadata(topic: String, topicPartitionsToDelete: Set[TopicPartition]) : Unit
+  def getTopicProperties(topic: String): Properties
 }
 
 class ControllerDeletionClient(controller: KafkaController, zkClient: KafkaZkClient) extends DeletionClient {
+
+  val configRepository: ZkConfigRepository = new ZkConfigRepository(new AdminZkClient(zkClient))
+
   override def deleteTopic(topic: String, epochZkVersion: Int): Unit = {
     zkClient.deleteTopicZNode(topic, epochZkVersion)
     zkClient.deleteTopicConfigs(Seq(topic), epochZkVersion)
@@ -48,6 +62,15 @@ class ControllerDeletionClient(controller: KafkaController, zkClient: KafkaZkCli
 
   override def sendMetadataUpdate(partitions: Set[TopicPartition]): Unit = {
     controller.sendUpdateMetadataRequest(controller.controllerContext.liveOrShuttingDownBrokerIds.toSeq, partitions)
+  }
+
+  override def sendRemotePartitionDeleteMetadata(topic: String, topicPartitionsToDelete: Set[TopicPartition]): Unit = {
+    controller.processRemoteTopicDeletionEvent(topic = topic, topicPartitionsToDelete = topicPartitionsToDelete)
+  }
+
+  override def getTopicProperties(topic: String): Properties = {
+    val topicProps = configRepository.topicConfig(topic)
+    topicProps
   }
 }
 
@@ -88,7 +111,8 @@ class TopicDeletionManager(config: KafkaConfig,
                            controllerContext: ControllerContext,
                            replicaStateMachine: ReplicaStateMachine,
                            partitionStateMachine: PartitionStateMachine,
-                           client: DeletionClient) extends Logging {
+                           client: DeletionClient,
+                           remoteLogManager: Option[RemoteLogManager]) extends Logging {
   this.logIdent = s"[Topic Deletion Manager ${config.brokerId}] "
   val isDeleteTopicEnabled: Boolean = config.deleteTopicEnable
 
@@ -176,6 +200,54 @@ class TopicDeletionManager(config: KafkaConfig,
     }
   }
 
+  def putRemotePartitionDeleteMetadata(topic: String, topicId : Option[Uuid],
+                                       topicPartitionsToDelete: Set[TopicPartition]): Set[TopicPartition] = {
+    val topicPartitionsInError = mutable.Set.empty[TopicPartition]
+    val topicProps = client.getTopicProperties(topic)
+    val logConfig = LogConfig.fromProps(LogConfig.extractLogConfigMap(config), topicProps)
+
+    def supportedTopic(): Boolean = {
+      !Topic.isInternal(topic) && !logConfig.compact &&
+        !topic.equals(TopicBasedRemoteLogMetadataManagerConfig.REMOTE_LOG_METADATA_TOPIC_NAME)
+    }
+
+    // Proceed only if the RLM is present and wired. RLM will not be present if
+    // remoteLogManagerConfig.enableRemoteStorageSystem() is false ==> remote.log.storage.system.enable
+    remoteLogManager.foreach(rlm => {
+      info(s"Attempting to clean up remote data for topic ${topic} if available.")
+      // Note: We are not checking the topic level configuration here to see if remote storage is enabled,
+      // so effectively this may result in extra calls for RLMM. We need to avoid the case of not deleting
+      // topic data during the disablement of tiered storage at a topic level and ending up not cleaning up remote data.
+      if (supportedTopic()) {
+        val topicPartitionsToDeleteByTopic = topicPartitionsToDelete.groupBy(_.topic())
+        topicPartitionsToDeleteByTopic.forKeyValue((topic, partitions) => {
+          if (topicId.isDefined) {
+            val tpIds = partitions.map(new TopicIdPartition(topicId.get, _))
+            tpIds.foreach(tpId => {
+              try {
+                val remotePartitionDeleteMetadata =
+                  new RemotePartitionDeleteMetadata(tpId,
+                    RemotePartitionDeleteState.DELETE_PARTITION_MARKED, Time.SYSTEM.milliseconds(), config.brokerId)
+                info(s"Sending delete metadata to RLMM: ${remotePartitionDeleteMetadata} for topic partition: $tpId")
+                rlm.remoteLogMetadataManager.putRemotePartitionDeleteMetadata(remotePartitionDeleteMetadata)
+              } catch {
+                case ex: RemoteStorageException => {
+                  error(s"Error while deleting the remote log partition: ${tpId.topicPartition()}. " +
+                    s"This operation will be retried.", ex)
+                  topicPartitionsInError += tpId.topicPartition()
+                }
+              }
+            })
+          } else if (logConfig.remoteStorageEnable) {
+            error(s"TopicId is not present for the topic ${topic}.")
+          }
+        })
+      }
+    })
+
+    topicPartitionsInError
+  }
+
   private def isTopicIneligibleForDeletion(topic: String): Boolean = {
     if (isDeleteTopicEnabled) {
       controllerContext.topicsIneligibleForDeletion.contains(topic)
@@ -210,6 +282,17 @@ class TopicDeletionManager(config: KafkaConfig,
     resumeDeletions()
   }
 
+  def completeDeleteTopic(topic: String): Unit = {
+    // deregister partition change listener on the deleted topic. This is to prevent the partition change listener
+    // firing before the new topic listener when a deleted topic gets auto created
+    client.mutePartitionModifications(topic)
+    val replicasForDeletedTopic = controllerContext.replicasInState(topic, ReplicaDeletionSuccessful)
+    // controller will remove this replica from the state machine as well as its partition assignment cache
+    replicaStateMachine.handleStateChanges(replicasForDeletedTopic.toSeq, NonExistentReplica)
+    client.deleteTopic(topic, controllerContext.epochZkVersion)
+    controllerContext.removeTopic(topic)
+  }
+
   /**
    * Topic deletion can be retried if -
    * 1. Topic deletion is not already complete
@@ -234,17 +317,6 @@ class TopicDeletionManager(config: KafkaConfig,
     val failedReplicas = topics.flatMap(controllerContext.replicasInState(_, ReplicaDeletionIneligible))
     debug(s"Retrying deletion of topics ${topics.mkString(",")} since replicas ${failedReplicas.mkString(",")} were not successfully deleted")
     replicaStateMachine.handleStateChanges(failedReplicas.toSeq, OfflineReplica)
-  }
-
-  private def completeDeleteTopic(topic: String): Unit = {
-    // deregister partition change listener on the deleted topic. This is to prevent the partition change listener
-    // firing before the new topic listener when a deleted topic gets auto created
-    client.mutePartitionModifications(topic)
-    val replicasForDeletedTopic = controllerContext.replicasInState(topic, ReplicaDeletionSuccessful)
-    // controller will remove this replica from the state machine as well as its partition assignment cache
-    replicaStateMachine.handleStateChanges(replicasForDeletedTopic.toSeq, NonExistentReplica)
-    client.deleteTopic(topic, controllerContext.epochZkVersion)
-    controllerContext.removeTopic(topic)
   }
 
   /**
@@ -324,11 +396,17 @@ class TopicDeletionManager(config: KafkaConfig,
       info(s"Handling deletion for topics ${topicsQueuedForDeletion.mkString(",")}")
 
     topicsQueuedForDeletion.foreach { topic =>
+      val areAllReplicasDeleted = controllerContext.areAllReplicasInState(topic, ReplicaDeletionSuccessful)
       // if all replicas are marked as deleted successfully, then topic deletion is done
-      if (controllerContext.areAllReplicasInState(topic, ReplicaDeletionSuccessful)) {
-        // clear up all state for this topic from controller cache and zookeeper
-        completeDeleteTopic(topic)
-        info(s"Deletion of topic $topic successfully completed")
+      if (areAllReplicasDeleted) {
+        info(s"Replicas are deleted for topic ${topic}, attempting to clean up remote data if available.")
+        // Note: remoteLogManager will be present only if remoteLogManagerConfig.enableRemoteStorageSystem() is true
+        if (remoteLogManager.isEmpty) {
+          completeDeleteTopic(topic)
+          info(s"Deletion of topic $topic successfully completed.")
+        } else {
+          client.sendRemotePartitionDeleteMetadata(topic, controllerContext.partitionsForTopic(topic))
+        }
       } else if (!controllerContext.isAnyReplicaInState(topic, ReplicaDeletionStarted)) {
         // if you come here, then no replica is in TopicDeletionStarted and all replicas are not in
         // TopicDeletionSuccessful. That means, that either given topic haven't initiated deletion
@@ -339,7 +417,7 @@ class TopicDeletionManager(config: KafkaConfig,
       }
 
       // Add topic to the eligible set if it is eligible for deletion.
-      if (isTopicEligibleForDeletion(topic)) {
+      if (isTopicEligibleForDeletion(topic) && !areAllReplicasDeleted) {
         info(s"Deletion of topic $topic (re)started")
         topicsEligibleForDeletion += topic
       }

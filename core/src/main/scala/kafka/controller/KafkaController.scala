@@ -25,6 +25,7 @@ import kafka.common._
 import kafka.controller.KafkaController.AlterIsrCallback
 import kafka.cluster.Broker
 import kafka.controller.KafkaController.{AlterReassignmentsCallback, ElectLeadersCallback, ListReassignmentsCallback, UpdateFeaturesCallback}
+import kafka.log.remote.RemoteLogManager
 import kafka.metrics.{KafkaMetricsGroup, KafkaTimer}
 import kafka.server._
 import kafka.utils._
@@ -43,7 +44,7 @@ import org.apache.kafka.common.message.UpdateFeaturesRequestData
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{AbstractControlRequest, ApiError, LeaderAndIsrResponse, UpdateFeaturesRequest, UpdateMetadataResponse}
-import org.apache.kafka.common.utils.{Time, Utils}
+import org.apache.kafka.common.utils.{ExponentialBackoff, Time, Utils}
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.Code
 
@@ -77,7 +78,8 @@ class KafkaController(val config: KafkaConfig,
                       tokenManager: DelegationTokenManager,
                       brokerFeatures: BrokerFeatures,
                       featureCache: FinalizedFeatureCache,
-                      threadNamePrefix: Option[String] = None)
+                      threadNamePrefix: Option[String] = None,
+                      remoteLogManager: Option[RemoteLogManager])
   extends ControllerEventProcessor with Logging with KafkaMetricsGroup {
 
   this.logIdent = s"[Controller id=${config.brokerId}] "
@@ -106,7 +108,7 @@ class KafkaController(val config: KafkaConfig,
   val partitionStateMachine: PartitionStateMachine = new ZkPartitionStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
   val topicDeletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
-    partitionStateMachine, new ControllerDeletionClient(this, zkClient))
+    partitionStateMachine, new ControllerDeletionClient(this, zkClient), remoteLogManager)
 
   private val controllerChangeHandler = new ControllerChangeHandler(eventManager)
   private val brokerChangeHandler = new BrokerChangeHandler(eventManager)
@@ -151,6 +153,10 @@ class KafkaController(val config: KafkaConfig,
   def brokerEpoch: Long = _brokerEpoch
 
   def epoch: Int = controllerContext.epoch
+
+  /* Single-thread scheduler to delete remote topics */
+  private val remoteTopicDeletionScheduler = new KafkaScheduler(threads = 1, threadNamePrefix = "remote-topic-deleter")
+  private val remoteDeletionBackoffMs = new ExponentialBackoff(1 * 60 * 1000, 2, 30 * 60 * 1000, 0.02)
 
   /**
    * Invoked when the controller module of a Kafka server is started up. This does not assume that the current broker
@@ -281,6 +287,9 @@ class KafkaController(val config: KafkaConfig,
         period = config.delegationTokenExpiryCheckIntervalMs,
         unit = TimeUnit.MILLISECONDS)
     }
+
+    // Enabling the deletion scheduler only if the RLM is available
+    remoteLogManager.foreach(rlm => {remoteTopicDeletionScheduler.startup()})
   }
 
   private def createFeatureZNode(newNode: FeatureZNode): Int = {
@@ -470,6 +479,9 @@ class KafkaController(val config: KafkaConfig,
     // stop token expiry check scheduler
     if (tokenCleanScheduler.isStarted)
       tokenCleanScheduler.shutdown()
+
+    if (remoteTopicDeletionScheduler.isStarted)
+      remoteTopicDeletionScheduler.shutdown()
 
     // de-register partition ISR listener for on-going partition reassignment task
     unregisterPartitionReassignmentIsrChangeHandlers()
@@ -1096,6 +1108,51 @@ class KafkaController(val config: KafkaConfig,
     topics.foreach { topic =>
       partitionModificationsHandlers.remove(topic).foreach(handler => zkClient.unregisterZNodeChangeHandler(handler.path))
     }
+  }
+
+  // This method will be retried until all of the remote log segements are deleted.
+  private[controller] def processRemoteTopicDeletionEvent(topic: String, topicPartitionsToDelete: Set[TopicPartition],
+                                                          retryAttempt: Long = 0): Unit = {
+    def nextDeletionBackoff(nextAttempt: Long) : Long = {
+      if (nextAttempt == 0) 0 else remoteDeletionBackoffMs.backoff(nextAttempt)
+    }
+
+    if (!isActive) return
+
+    val attempt = if (retryAttempt == Long.MaxValue) 0 else retryAttempt
+    val topicId = controllerContext.topicIds.get(topic)
+
+    info(s"Scheduling remote data deletions for topic: ${topic}, topic partitions: ${topicPartitionsToDelete}, " +
+      s"attempt: ${attempt + 1}.")
+
+    remoteTopicDeletionScheduler.schedule(name = s"delete-topic-${topic}",
+      fun = () => {
+        val topicPartitionsToRetry =
+          topicDeletionManager.putRemotePartitionDeleteMetadata(topic, topicId, topicPartitionsToDelete)
+        if (topicPartitionsToRetry.nonEmpty) {
+          // Retries will be attempted again from controller thread
+          eventManager.put(RemoteTopicDeletion(topic, topicPartitionsToRetry, attempt + 1))
+        } else {
+          // We want to perform the completion of deletion from ZK for the topic from controller thread to avoid race
+          // conditions during topic removals from ControllerContext
+          eventManager.put(CompleteRemoteTopicDeletion(topic))
+        }
+      },
+      /**
+       * Attempt: 1, Value: 2 mins
+       * Attempt: 2, Value: 3 mins
+       * Attempt: 3, Value: 8 mins
+       * Attempt: 4, Value: 15 mins
+       * Attempt: 5, Value: 30 mins and will remain at this level
+       */
+      delay = nextDeletionBackoff(attempt),
+      unit = TimeUnit.MILLISECONDS)
+  }
+
+  // clear up all state for this topic from controller cache and zookeeper
+  private[controller] def processCompleteRemoteTopicDeletionEvent(topic: String): Unit = {
+    topicDeletionManager.completeDeleteTopic(topic)
+    info(s"Deletion of topic $topic successfully completed.")
   }
 
   private def unregisterPartitionReassignmentIsrChangeHandlers(): Unit = {
@@ -2432,6 +2489,10 @@ class KafkaController(val config: KafkaConfig,
           processUpdateMetadataResponseReceived(response, brokerId)
         case TopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors) =>
           processTopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors)
+        case RemoteTopicDeletion(topic, partitionsToDelete, retryAttempt) =>
+          processRemoteTopicDeletionEvent(topic, partitionsToDelete, retryAttempt)
+        case CompleteRemoteTopicDeletion(topic) =>
+          processCompleteRemoteTopicDeletionEvent(topic)
         case BrokerChange =>
           processBrokerChange()
         case BrokerModifications(brokerId) =>
@@ -2699,6 +2760,16 @@ case class PartitionModifications(topic: String) extends ControllerEvent {
 }
 
 case object TopicDeletion extends ControllerEvent {
+  override def state: ControllerState = ControllerState.TopicDeletion
+  override def preempt(): Unit = {}
+}
+
+case class RemoteTopicDeletion(topic: String, partitionsToDelete: Set[TopicPartition], retryAttempt: Long) extends ControllerEvent {
+  override def state: ControllerState = ControllerState.TopicDeletion
+  override def preempt(): Unit = {}
+}
+
+case class CompleteRemoteTopicDeletion(topic: String) extends ControllerEvent {
   override def state: ControllerState = ControllerState.TopicDeletion
   override def preempt(): Unit = {}
 }

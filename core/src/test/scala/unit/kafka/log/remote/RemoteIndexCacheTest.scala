@@ -17,14 +17,14 @@
 package kafka.log.remote
 
 import java.io.{File, FileInputStream}
-import java.nio.file.Files
+import java.nio.file.{Files, Path}
 import java.util.Collections
 import kafka.log.{OffsetIndex, OffsetPosition, TimeIndex}
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.server.log.remote.storage.RemoteStorageManager.IndexType
 import org.apache.kafka.server.log.remote.storage.{RemoteLogSegmentId, RemoteLogSegmentMetadata, RemoteResourceNotFoundException, RemoteStorageManager}
 import org.easymock.EasyMock
-import org.junit.jupiter.api.{AfterEach, BeforeEach}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
 import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 import org.easymock.EasyMock.{anyObject, expect, reset, verify}
 import org.junit.jupiter.params.ParameterizedTest
@@ -33,7 +33,9 @@ import org.junit.jupiter.params.provider.ValueSource
 class RemoteIndexCacheTest {
 
   val rlsm: RemoteStorageManager = EasyMock.createMock(classOf[RemoteStorageManager])
+  var remoteLogSegmentId: RemoteLogSegmentId = _
   var rlsMetadata: RemoteLogSegmentMetadata = _
+  var topicIdPartition : TopicIdPartition = _
   var cache: RemoteIndexCache = _
   var offsetIndex: OffsetIndex = _
   var timeIndex: TimeIndex = _
@@ -50,10 +52,10 @@ class RemoteIndexCacheTest {
     val logDir = Files.createTempDirectory("kafka-").toString
     cache = new RemoteIndexCache(remoteStorageManager = rlsm, logDir = logDir)
 
-    val topicIdPartition = new TopicIdPartition(Uuid.randomUuid(), new TopicPartition("foo", 0))
-    rlsMetadata = new RemoteLogSegmentMetadata(new RemoteLogSegmentId(topicIdPartition, Uuid.randomUuid()),
-      baseOffset, offsetIndex.lastOffset, -1L, 1, 1024, 1024,
-      Collections.singletonMap(0, 0L))
+    topicIdPartition = new TopicIdPartition(Uuid.randomUuid(), new TopicPartition("foo", 0))
+    remoteLogSegmentId = new RemoteLogSegmentId(topicIdPartition, Uuid.randomUuid())
+    rlsMetadata = new RemoteLogSegmentMetadata(remoteLogSegmentId, baseOffset,
+      offsetIndex.lastOffset, -1L, 1, 1024, 1024, Collections.singletonMap(0, 0L))
   }
 
   private def setupRlsm(transactionFileExists: Boolean) = {
@@ -158,5 +160,46 @@ class RemoteIndexCacheTest {
     cache.getIndexEntry(rlsMetadata)
 
     verify(rlsm)
+  }
+
+  /**
+   *  Step 1: Invoke the cache.lookupOffset for a segment id to force caching
+   *  Step 2: Force cache clean up by invoking removeIndexEntriesForDeletedTopicIdPartitions on cache
+   *  Step 3: Invoke the cache.lookupOffset with same segment id and assert for cache miss
+   */
+  @Test
+  def testPositionIndexFromRemoteStorageAfterCachePurge(): Unit = {
+
+    assertIndexEntries()
+
+    reset(rlsm)
+    expect(rlsm.fetchIndex(anyObject(classOf[RemoteLogSegmentMetadata]), EasyMock.eq(IndexType.OFFSET)))
+      .andReturn(new FileInputStream(offsetIndex.file))
+      .times(2)
+    expect(rlsm.fetchIndex(anyObject(classOf[RemoteLogSegmentMetadata]), EasyMock.eq(IndexType.TIMESTAMP)))
+      .andReturn(new FileInputStream(timeIndex.file))
+      .times(2)
+    expect(rlsm.fetchIndex(anyObject(classOf[RemoteLogSegmentMetadata]), EasyMock.eq(IndexType.TRANSACTION)))
+      .andReturn(new FileInputStream(File.createTempFile("kafka-test-", ".txnIndex")))
+      .times(2)
+    EasyMock.replay(rlsm)
+
+    val offsetPosition1 = offsetIndex.entry(1)
+    val offsetPosition2 = offsetIndex.entry(2)
+    // this call should have invoked fetchOffsetIndex, fetchTimestampIndex once
+    val resultOffset = cache.lookupOffset(rlsMetadata, offsetPosition1.offset)
+    assertEquals(offsetPosition1.position, resultOffset)
+    assertEquals(1, cache.entries.size())
+
+    // delete index files to force re-loads
+    Files.list(cache.cacheDir.toPath).forEach((path: Path) => {
+      Files.deleteIfExists(path)
+    })
+    cache.removeIndexEntriesForDeletedTopicIdPartitions(Set(topicIdPartition))
+    assertEquals(0, cache.entries.size())
+
+    cache.lookupOffset(rlsMetadata, offsetPosition2.offset)
+
+    EasyMock.verify(rlsm)
   }
 }
