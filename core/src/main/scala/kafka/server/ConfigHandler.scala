@@ -22,6 +22,7 @@ import java.util.Properties
 import DynamicConfig.Broker._
 import kafka.api.ApiVersion
 import kafka.controller.KafkaController
+import kafka.zk.KafkaZkClient
 import kafka.log.{Log, LogConfig}
 import kafka.network.ConnectionQuotas
 import kafka.security.CredentialProvider
@@ -29,6 +30,7 @@ import kafka.server.Constants._
 import kafka.server.QuotaFactory.QuotaManagers
 import kafka.utils.Implicits._
 import kafka.utils.Logging
+import org.apache.kafka.common.Uuid
 import org.apache.kafka.common.config.ConfigDef.Validator
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.config.internals.QuotaConfigs
@@ -53,7 +55,8 @@ trait ConfigHandler {
   * The callback provides the topic name and the full properties set read from ZK
   */
 class TopicConfigHandler(private val replicaManager: ReplicaManager,
-                         kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController) extends ConfigHandler with Logging  {
+                         kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController,
+                         zkClient: KafkaZkClient) extends ConfigHandler with Logging  {
 
   private def updateLogConfig(topic: String,
                               topicConfig: Properties,
@@ -77,14 +80,26 @@ class TopicConfigHandler(private val replicaManager: ReplicaManager,
   private[server] def maybeBootstrapRemoteLogComponents(topic: String,
                                                         logs: Seq[Log],
                                                         wasRemoteLogEnabledBeforeUpdate: Boolean): Unit = {
+
+    def maybeFetchTopicId(topic: String): Map[String, Uuid] = {
+      val topicId = Map(topic -> logs.head.topicId)
+        .filter(entry => entry._2 != Uuid.ZERO_UUID)
+        .getOrElse(topic,
+            zkClient.getTopicIdsForTopics(Predef.Set(topic))
+              .filter(entry => entry._2 != Uuid.ZERO_UUID)
+              .getOrElse(topic, throw new ConfigException(LogConfig.RemoteLogStorageEnableProp,
+                logs.head.remoteLogEnabled(), s"Error occurred while setting the configuration due to unavailability of topic ids for topic.")))
+      Map(topic -> topicId)
+    }
+
     val isRemoteLogEnabled = logs.head.remoteLogEnabled()
     // Topic configs gets updated incrementally. This check is added to prevent redundant updates.
     if (!wasRemoteLogEnabledBeforeUpdate && isRemoteLogEnabled) {
-      val topicIds = Map(topic -> logs.head.topicId).asJava
+      val topicIds = maybeFetchTopicId(topic)
       val (leaderPartitions, followerPartitions) =
         logs.flatMap(log => replicaManager.onlinePartition(log.topicPartition)).partition(_.isLeader)
       replicaManager.remoteLogManager.foreach(rlm =>
-        rlm.onLeadershipChange(leaderPartitions.toSet, followerPartitions.toSet, topicIds))
+        rlm.onLeadershipChange(leaderPartitions.toSet, followerPartitions.toSet, topicIds.asJava))
     } else if (wasRemoteLogEnabledBeforeUpdate && !isRemoteLogEnabled) {
       logs.map(log => {
         log.maybeIncrementLogStartOffsetAsRemoteLogStorageDisabled()
