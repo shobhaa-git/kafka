@@ -16,9 +16,12 @@
  */
 package kafka.log.remote
 
+import kafka.utils.MockTime
 import org.apache.kafka.common.{TopicIdPartition, TopicPartition, Uuid}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.Test
+
+import java.time.Duration
 
 class LazyRemoteLogSizeTest {
   val topicIdPartition = new TopicIdPartition(
@@ -27,16 +30,17 @@ class LazyRemoteLogSizeTest {
   )
 
   val brokerId = 1
+  val time = new MockTime()
 
   @Test
-  def loadsSizeOnlyWhenRequired(): Unit = {
+  def getOrCompute_loadsSizeOnlyWhenRequired(): Unit = {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
       numComputes += 1
       0L
     }
 
-    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition)
+    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
 
@@ -57,6 +61,40 @@ class LazyRemoteLogSizeTest {
   }
 
   @Test
+  def getOrCompute_refreshesSizeRegularly(): Unit = {
+    var numComputes = 0
+    val computeRemoteLogSizeWithCount = () => {
+      numComputes += 1
+      0L
+    }
+
+    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
+
+    assertEquals(0, numComputes)
+
+    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(1, numComputes)
+
+    // Does not recompute immediately
+    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(1, numComputes)
+
+    // Does not recompute before the specified time
+    time.sleep(Duration.ofHours(12).toMillis)
+    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(1, numComputes)
+
+    // Recomputes after long enough
+    time.sleep(Duration.ofHours(12).toMillis)
+    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(2, numComputes)
+
+    time.sleep(Duration.ofHours(25).toMillis)
+    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(3, numComputes)
+  }
+
+  @Test
   def addAndSubtract_WhenValueIsPresent(): Unit = {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
@@ -64,7 +102,7 @@ class LazyRemoteLogSizeTest {
       0L
     }
 
-    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition)
+    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
     assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
@@ -92,7 +130,7 @@ class LazyRemoteLogSizeTest {
       0L
     }
 
-    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition)
+    val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
     lazyRemoteLogSize.add(2000)

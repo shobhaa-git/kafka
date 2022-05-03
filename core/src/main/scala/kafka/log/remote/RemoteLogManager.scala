@@ -382,7 +382,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
     private var readOffsetOption: Option[Long] = None
 
     private val lazyRemoteLogSize: LazyRemoteLogSize =
-      new LazyRemoteLogSize(brokerId, tpId)
+      new LazyRemoteLogSize(brokerId, tpId, time)
 
     //todo-updating log with remote index highest offset -- should this be required?
     // fetchLog(tp.topicPartition()).foreach { log => log.updateRemoteIndexHighestOffset(readOffset) }
