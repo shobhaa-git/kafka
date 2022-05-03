@@ -278,12 +278,18 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
         remoteLogMetadataManager.onPartitionLeadershipChanges(leaderPartitions.keySet.asJava, followerPartitions.asJava)
         followerPartitions.foreach {
-          topicIdPartition => doHandleLeaderOrFollowerPartitions(topicIdPartition, _.convertToFollower())
+          topicIdPartition =>
+            doHandleLeaderOrFollowerPartitions(topicIdPartition, _.convertToFollower())
+
+            val topicPartition = topicIdPartition.topicPartition()
+            brokerTopicStats.topicAggregatedStats(topicPartition.topic()).remove(topicPartition.partition())
+            brokerTopicStats.allTopicAggregatedStats.remove(topicPartition.topic())
         }
         leaderPartitions.foreach {
           case (topicIdPartition, partition) =>
             doHandleLeaderOrFollowerPartitions(topicIdPartition, _.convertToLeader(partition.getLeaderEpoch))
         }
+
       }
     }
     None
@@ -316,7 +322,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           remoteLogMetadataManager.listRemoteLogSegments(tpId).forEachRemaining(elt => deleteRemoteLogSegment(elt, _ => true))
         }
 
-        brokerTopicStats.partitionAggregatedStats(topicPartition.topic()).removePartition(topicPartition.partition())
+        brokerTopicStats.topicAggregatedStats(topicPartition.topic()).remove(topicPartition.partition())
+        brokerTopicStats.allTopicAggregatedStats.remove(topicPartition.topic())
 
       } catch {
         case ex: Throwable => errorHandler(topicPartition, ex)
@@ -509,7 +516,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                 val offsetLag = (log.activeSegment.baseOffset - 1) - endOffset
                 val bytesLag = log.localOnlyLogSegmentsSize - log.activeSegment.size
                 val (topic, partition) = (tpId.topicPartition().topic(), tpId.topicPartition().partition())
-                brokerTopicStats.partitionAggregatedStats(topic).setLag(partition, offsetLag, bytesLag)
+                brokerTopicStats.setLag(tpId.topicPartition(), offsetLag, bytesLag)
               }
             }
           } else {
@@ -633,8 +640,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
         remoteLogAggregateStatsCache.getOrCompute(computeRemoteLogAggregateStats) match {
           case RemoteLogAggregateStats(remoteLogSizeBytes, numMetadataSegments) =>
-            brokerTopicStats.partitionAggregatedStats(tpId.topicPartition().topic())
-              .setRemoteLogAggregateStats(tpId.topicPartition().partition(), remoteLogSizeBytes, numMetadataSegments)
+            brokerTopicStats.setRemoteLogAggregateStats(tpId.topicPartition(), remoteLogSizeBytes, numMetadataSegments)
 
             remoteLogSizeBytes + log.localOnlyLogSegmentsSize
         }
