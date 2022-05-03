@@ -200,6 +200,8 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
     BrokerTopicStats.RemoteReadRequestsPerSec -> MeterWrapper(BrokerTopicStats.RemoteReadRequestsPerSec, "requests"),
     BrokerTopicStats.FailedRemoteReadRequestsPerSec -> MeterWrapper(BrokerTopicStats.FailedRemoteReadRequestsPerSec, "requests"),
     BrokerTopicStats.FailedRemoteWriteRequestsPerSec -> MeterWrapper(BrokerTopicStats.FailedRemoteWriteRequestsPerSec, "requests"),
+    BrokerTopicStats.FailedRemoteDeleteRequestsPerSec -> MeterWrapper(BrokerTopicStats.FailedRemoteDeleteRequestsPerSec, "requests"),
+    BrokerTopicStats.FailedBuildRemoteStatePerSec -> MeterWrapper(BrokerTopicStats.FailedBuildRemoteStatePerSec, "requests"),
     BrokerTopicStats.NoKeyCompactedTopicRecordsPerSec -> MeterWrapper(BrokerTopicStats.NoKeyCompactedTopicRecordsPerSec, "requests"),
     BrokerTopicStats.InvalidMagicNumberRecordsPerSec -> MeterWrapper(BrokerTopicStats.InvalidMagicNumberRecordsPerSec, "requests"),
     BrokerTopicStats.InvalidMessageCrcRecordsPerSec -> MeterWrapper(BrokerTopicStats.InvalidMessageCrcRecordsPerSec, "requests"),
@@ -268,6 +270,10 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
   def failedRemoteReadRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedRemoteReadRequestsPerSec).meter()
 
   def failedRemoteWriteRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedRemoteWriteRequestsPerSec).meter()
+
+  def failedRemoteDeleteRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedRemoteDeleteRequestsPerSec).meter()
+
+  def failedBuildRemoteStateRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedBuildRemoteStatePerSec).meter()
 
 
   def closeMetric(metricType: String): Unit = {
@@ -401,6 +407,8 @@ object BrokerTopicStats {
   val TotalRemoteLogMetadataCount = "TotalRemoteLogMetadataCount"
   val FailedRemoteReadRequestsPerSec = "RemoteReadErrorsPerSec"
   val FailedRemoteWriteRequestsPerSec = "RemoteWriteErrorsPerSec"
+  val FailedRemoteDeleteRequestsPerSec = "RemoteDeleteErrorsPerSec"
+  val FailedBuildRemoteStatePerSec = "BuildRemoteStateErrorsPerSec"
 
   // These following topics are for LogValidator for better debugging on failed records
   val NoKeyCompactedTopicRecordsPerSec = "NoKeyCompactedTopicRecordsPerSec"
@@ -480,6 +488,8 @@ class BrokerTopicStats extends Logging {
       topicMetrics.closeMetric(BrokerTopicStats.ProduceMessageConversionsPerSec)
       topicMetrics.closeMetric(BrokerTopicStats.RemoteBytesOutPerSec)
       topicMetrics.closeMetric(BrokerTopicStats.FailedRemoteWriteRequestsPerSec)
+      topicMetrics.closeMetric(BrokerTopicStats.FailedRemoteDeleteRequestsPerSec)
+      topicMetrics.closeMetric(BrokerTopicStats.FailedBuildRemoteStatePerSec)
       topicMetrics.closeMetric(BrokerTopicStats.ReplicationBytesOutPerSec)
       topicMetrics.closeMetric(BrokerTopicStats.ReassignmentBytesOutPerSec)
     }

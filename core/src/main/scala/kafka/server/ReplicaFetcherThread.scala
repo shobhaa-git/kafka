@@ -525,11 +525,15 @@ class ReplicaFetcherThread(name: String,
                     s"LeaderLogStartOffset: $leaderLogStartOffset")
 
                 case None =>
+                  brokerTopicStats.topicStats(partition.topic()).failedBuildRemoteStateRate.mark()
+                  brokerTopicStats.allTopicsStats.failedBuildRemoteStateRate.mark()
                   throw new RemoteStorageException(s"Could not find remote metadata for $partition at offset " +
                     s"$tieredOffset and leader epoch $lookupEpoch")
               }
 
             case None =>
+              brokerTopicStats.topicStats(partition.topic()).failedBuildRemoteStateRate.mark()
+              brokerTopicStats.allTopicsStats.failedBuildRemoteStateRate.mark()
               throw new RemoteStorageException(s"Could not find the leader epoch of $partition at offset " +
                 s"$tieredOffset from its leader ${sourceBroker.id}")
           }

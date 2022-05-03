@@ -719,6 +719,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
         }
       } catch {
         case ex: Exception =>
+          brokerTopicStats.topicStats(tpId.topicPartition().topic()).failedRemoteDeleteRequestRate.mark()
+          brokerTopicStats.allTopicsStats.failedRemoteDeleteRequestRate.mark()
           if (!isCancelled()) {
             error(s"Error while cleaning up log segments for partition: $tpId", ex)
           }
