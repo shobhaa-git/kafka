@@ -604,8 +604,8 @@ class RemoteLogManagerTest {
     }
     verify(logConfig, log, rlmmManager, rsmManager)
 
-    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
-    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    val remoteLogSizeMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
     assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
     assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
@@ -673,8 +673,8 @@ class RemoteLogManagerTest {
     }
     verify(logConfig, log, rlmmManager, rsmManager)
 
-    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
-    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    val remoteLogSizeMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
     assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
     assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
@@ -747,8 +747,8 @@ class RemoteLogManagerTest {
     }
     verify(logConfig, log, rlmmManager, rsmManager)
 
-    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
-    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    val remoteLogSizeMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
     assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
     assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
@@ -1087,8 +1087,8 @@ class RemoteLogManagerTest {
 
     task.copyLogSegmentsToRemote()
 
-    val offsetLag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).offsetLag()
-    val bytesLag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).bytesLag()
+    val offsetLag = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).offsetLag()
+    val bytesLag = brokerTopicStats.partitionAggregatedStats(topicIdPartition.topicPartition().topic()).bytesLag()
     assertEquals(10L, offsetLag)
     assertEquals(localOnlyLogSize - activeSegmentSize, bytesLag)
   }

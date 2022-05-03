@@ -283,25 +283,25 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
  *
  * @param topicName The topic this metric represents the total lag of.
  */
-class BrokerTopicTierLagMetrics(topicName: String) extends KafkaMetricsGroup {
+class BrokerTopicPartitionAggregatedMetrics(topicName: String) extends KafkaMetricsGroup {
   private val tags = Map("topic" -> topicName)
 
-  private val metricTypeMap = new Pool[String, BrokerTopicTierLagMetric]()
+  private val metricTypeMap = new Pool[String, BrokerTopicPartitionAggregatedMetric]()
   metricTypeMap.putAll(Map(
-    TotalTierOffsetLag -> new BrokerTopicTierLagMetric(TotalTierOffsetLag),
-    TotalTierBytesLag -> new BrokerTopicTierLagMetric(TotalTierBytesLag),
-    TotalRemoteLogSizeBytes -> new BrokerTopicTierLagMetric(TotalRemoteLogSizeBytes),
-    TotalRemoteLogMetadataCount -> new BrokerTopicTierLagMetric(TotalRemoteLogMetadataCount)
+    TotalTierOffsetLag -> new BrokerTopicPartitionAggregatedMetric(TotalTierOffsetLag),
+    TotalTierBytesLag -> new BrokerTopicPartitionAggregatedMetric(TotalTierBytesLag),
+    TotalRemoteLogSizeBytes -> new BrokerTopicPartitionAggregatedMetric(TotalRemoteLogSizeBytes),
+    TotalRemoteLogMetadataCount -> new BrokerTopicPartitionAggregatedMetric(TotalRemoteLogMetadataCount)
   ).asJava)
 
   def setLag(partition: Int, partitionOffsetLag: Long, partitionBytesLag: Long): Unit = {
-    offsetLagWrapper.setLag(partition, partitionOffsetLag)
-    bytesLagWrapper.setLag(partition, partitionBytesLag)
+    offsetLagWrapper.setPartitionMetricValue(partition, partitionOffsetLag)
+    bytesLagWrapper.setPartitionMetricValue(partition, partitionBytesLag)
   }
 
-  def setRemoteLogAggregateData(partition: Int, remoteLogSizeBytes: Long, remoteLogMetadataCount: Long): Unit = {
-    remoteLogSizeBytesWrapper.setLag(partition, remoteLogSizeBytes)
-    remoteLogMetadataCountWrapper.setLag(partition, remoteLogMetadataCount)
+  def setRemoteLogAggregateStats(partition: Int, remoteLogSizeBytes: Long, remoteLogMetadataCount: Long): Unit = {
+    remoteLogSizeBytesWrapper.setPartitionMetricValue(partition, remoteLogSizeBytes)
+    remoteLogMetadataCountWrapper.setPartitionMetricValue(partition, remoteLogMetadataCount)
   }
 
   def removePartition(partition: Int): Unit = {
@@ -312,43 +312,43 @@ class BrokerTopicTierLagMetrics(topicName: String) extends KafkaMetricsGroup {
    * The tier lag of the given topic, where lagging records are defined as records from non-active segments
    * not yet uploaded to the remote storage tier.
    */
-  private def offsetLagWrapper: BrokerTopicTierLagMetric = metricTypeMap.get(TotalTierOffsetLag)
+  private def offsetLagWrapper: BrokerTopicPartitionAggregatedMetric = metricTypeMap.get(TotalTierOffsetLag)
 
-  private def bytesLagWrapper: BrokerTopicTierLagMetric = metricTypeMap.get(TotalTierBytesLag)
+  private def bytesLagWrapper: BrokerTopicPartitionAggregatedMetric = metricTypeMap.get(TotalTierBytesLag)
 
-  private def remoteLogSizeBytesWrapper: BrokerTopicTierLagMetric = metricTypeMap.get(TotalRemoteLogSizeBytes)
+  private def remoteLogSizeBytesWrapper: BrokerTopicPartitionAggregatedMetric = metricTypeMap.get(TotalRemoteLogSizeBytes)
 
-  private def remoteLogMetadataCountWrapper: BrokerTopicTierLagMetric = metricTypeMap.get(TotalRemoteLogMetadataCount)
+  private def remoteLogMetadataCountWrapper: BrokerTopicPartitionAggregatedMetric = metricTypeMap.get(TotalRemoteLogMetadataCount)
 
-  def offsetLag(): Long = offsetLagWrapper.lag()
+  def offsetLag(): Long = offsetLagWrapper.value()
 
-  def bytesLag(): Long = bytesLagWrapper.lag()
+  def bytesLag(): Long = bytesLagWrapper.value()
 
-  def remoteLogSize(): Long = remoteLogSizeBytesWrapper.lag()
+  def remoteLogSize(): Long = remoteLogSizeBytesWrapper.value()
 
-  def remoteLogMetadataCount(): Long = remoteLogMetadataCountWrapper.lag()
+  def remoteLogMetadataCount(): Long = remoteLogMetadataCountWrapper.value()
 
   def close(): Unit = metricTypeMap.values.foreach(_.close())
 
   /**
    * Partition-aggregated metric calculator
    */
-  class BrokerTopicTierLagMetric(metricName: String) {
-    private val partitionLags = mutable.Map[Int, Long]()
+  class BrokerTopicPartitionAggregatedMetric(metricName: String) {
+    private val partitionMetricValues = mutable.Map[Int, Long]()
     private val lock = new Object
-    private var _lag = 0L
+    private var _topicValue = 0L
 
-    newGauge[Long](metricName, () => lock synchronized _lag, tags)
+    newGauge[Long](metricName, () => lock synchronized _topicValue, tags)
 
     /**
      * Set the value for the given partition.
      * The total (topic-level) value is automatically recalculated when this method is called.
      */
-    def setLag(partition: Int, partitionLag: Long): Unit = {
+    def setPartitionMetricValue(partition: Int, partitionValue: Long): Unit = {
       lock synchronized {
-        partitionLags.get(partition).foreach(_lag -= _)
-        partitionLags.put(partition, partitionLag)
-        _lag += partitionLag
+        partitionMetricValues.get(partition).foreach(_topicValue -= _)
+        partitionMetricValues.put(partition, partitionValue)
+        _topicValue += partitionValue
       }
     }
 
@@ -357,11 +357,11 @@ class BrokerTopicTierLagMetrics(topicName: String) extends KafkaMetricsGroup {
      */
     def removePartition(partition: Int): Unit = {
       lock synchronized {
-        partitionLags.remove(partition).foreach(_lag -= _)
+        partitionMetricValues.remove(partition).foreach(_topicValue -= _)
       }
     }
 
-    def lag(): Long = _lag
+    def value(): Long = _topicValue
 
     def close(): Unit = removeMetric(metricName, tags)
   }
@@ -401,7 +401,7 @@ object BrokerTopicStats {
   val InvalidOffsetOrSequenceRecordsPerSec = "InvalidOffsetOrSequenceRecordsPerSec"
 
   private val valueFactory = (k: String) => new BrokerTopicMetrics(Some(k))
-  private val tieredMetricsFactory = (k: String) => new BrokerTopicTierLagMetrics(k)
+  private val partitionAggregatedStatsFactory = (k: String) => new BrokerTopicPartitionAggregatedMetrics(k)
 }
 
 class BrokerTopicStats extends Logging {
@@ -409,14 +409,15 @@ class BrokerTopicStats extends Logging {
   import BrokerTopicStats._
 
   private val stats = new Pool[String, BrokerTopicMetrics](Some(valueFactory))
-  private val tieredLagStats = new Pool[String, BrokerTopicTierLagMetrics](Some(tieredMetricsFactory))
+  private val partitionAggregatedStats =
+    new Pool[String, BrokerTopicPartitionAggregatedMetrics](Some(partitionAggregatedStatsFactory))
   val allTopicsStats = new BrokerTopicMetrics(None)
 
   def topicStats(topic: String): BrokerTopicMetrics =
     stats.getAndMaybePut(topic)
 
-  def tierLagStats(topic: String): BrokerTopicTierLagMetrics =
-    tieredLagStats.getAndMaybePut(topic)
+  def partitionAggregatedStats(topic: String): BrokerTopicPartitionAggregatedMetrics =
+    partitionAggregatedStats.getAndMaybePut(topic)
 
   def updateReplicationBytesIn(value: Long): Unit = {
     allTopicsStats.replicationBytesInRate.foreach { metric =>
@@ -473,7 +474,7 @@ class BrokerTopicStats extends Logging {
     if (metrics != null)
       metrics.close()
 
-    val lagMetrics = tieredLagStats.remove(topic)
+    val lagMetrics = partitionAggregatedStats.remove(topic)
     if (lagMetrics != null)
       lagMetrics.close()
   }
@@ -492,7 +493,7 @@ class BrokerTopicStats extends Logging {
   def close(): Unit = {
     allTopicsStats.close()
     stats.values.foreach(_.close())
-    tieredLagStats.values.foreach(_.close())
+    partitionAggregatedStats.values.foreach(_.close())
 
     info("Broker and topic stats closed")
   }

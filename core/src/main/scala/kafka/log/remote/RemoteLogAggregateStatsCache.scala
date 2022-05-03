@@ -41,10 +41,10 @@ private[remote] case class RemoteLogAggregateStats(remoteLogSizeBytes: Long, num
   }
 }
 
-private[remote] class LazyRemoteLogSize(brokerId: Int, tpId: TopicIdPartition, time: Time) extends Logging {
+private[remote] class RemoteLogAggregateStatsCache(brokerId: Int, tpId: TopicIdPartition, time: Time) extends Logging {
   this.logIdent = s"[RemoteLogManager=$brokerId partition=$tpId]"
   /**
-   * We maintain a cache of the total remote log aggregate stats and incrementally update it to avoid having to recompute it
+   * We maintain a cache of the remote log aggregate stats and incrementally update it to avoid having to recompute it
    * each time
    */
   private var _remoteLogAggregateStats: Option[RemoteLogAggregateStats] = None
@@ -56,15 +56,15 @@ private[remote] class LazyRemoteLogSize(brokerId: Int, tpId: TopicIdPartition, t
     }
   }
 
-  def getOrCompute(computeRemoteLogSize: () => RemoteLogAggregateStats): RemoteLogAggregateStats = {
+  def getOrCompute(computeRemoteLogAggregateStats: () => RemoteLogAggregateStats): RemoteLogAggregateStats = {
     this.synchronized {
       if (_remoteLogAggregateStats.isEmpty || shouldRefresh()) {
-        val originalRemoteLogSize = _remoteLogAggregateStats
+        val originalRemoteLogAggStats = _remoteLogAggregateStats
 
-        _remoteLogAggregateStats = Some(computeRemoteLogSize())
+        _remoteLogAggregateStats = Some(computeRemoteLogAggregateStats())
         lastRefreshMillis = time.milliseconds()
 
-        info(s"Recomputed remote log size as ${_remoteLogAggregateStats}, was previously $originalRemoteLogSize")
+        info(s"Recomputed remote log stats as ${_remoteLogAggregateStats}, was previously $originalRemoteLogAggStats")
       }
 
       _remoteLogAggregateStats.get

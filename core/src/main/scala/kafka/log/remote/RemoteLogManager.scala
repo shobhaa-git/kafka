@@ -316,7 +316,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           remoteLogMetadataManager.listRemoteLogSegments(tpId).forEachRemaining(elt => deleteRemoteLogSegment(elt, _ => true))
         }
 
-        brokerTopicStats.tierLagStats(topicPartition.topic()).removePartition(topicPartition.partition())
+        brokerTopicStats.partitionAggregatedStats(topicPartition.topic()).removePartition(topicPartition.partition())
 
       } catch {
         case ex: Throwable => errorHandler(topicPartition, ex)
@@ -381,8 +381,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
     // and needs to be fetched inside the task's run() method.
     private var readOffsetOption: Option[Long] = None
 
-    private val lazyRemoteLogSize: LazyRemoteLogSize =
-      new LazyRemoteLogSize(brokerId, tpId, time)
+    private val remoteLogAggregateStatsCache: RemoteLogAggregateStatsCache =
+      new RemoteLogAggregateStatsCache(brokerId, tpId, time)
 
     //todo-updating log with remote index highest offset -- should this be required?
     // fetchLog(tp.topicPartition()).foreach { log => log.updateRemoteIndexHighestOffset(readOffset) }
@@ -400,7 +400,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
     def convertToFollower(): Unit = {
       leaderEpoch = -1
-      lazyRemoteLogSize.clear()
+      remoteLogAggregateStatsCache.clear()
     }
 
     def copyLogSegmentsToRemote(): Unit = {
@@ -484,7 +484,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                   RemoteLogSegmentState.COPY_SEGMENT_FINISHED, brokerId)
 
                 remoteLogMetadataManager.updateRemoteLogSegmentMetadata(rlsmAfterCreate)
-                lazyRemoteLogSize.add(remoteLogSegmentMetadata.segmentSizeInBytes())
+                remoteLogAggregateStatsCache.add(remoteLogSegmentMetadata.segmentSizeInBytes())
                 brokerTopicStats.topicStats(tpId.topicPartition().topic())
                   .remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
                 brokerTopicStats.allTopicsStats.remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
@@ -509,7 +509,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                 val offsetLag = (log.activeSegment.baseOffset - 1) - endOffset
                 val bytesLag = log.localOnlyLogSegmentsSize - log.activeSegment.size
                 val (topic, partition) = (tpId.topicPartition().topic(), tpId.topicPartition().partition())
-                brokerTopicStats.tierLagStats(topic).setLag(partition, offsetLag, bytesLag)
+                brokerTopicStats.partitionAggregatedStats(topic).setLag(partition, offsetLag, bytesLag)
               }
             }
           } else {
@@ -620,8 +620,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           })
       }
 
-      def computeTotalLogSizeAndPublishMetrics(log: Log): Long = {
-        def computeRemoteLogSize(): RemoteLogAggregateStats = {
+      def computeTotalLogSizeAndUpdateMetrics(log: Log): Long = {
+        def computeRemoteLogAggregateStats(): RemoteLogAggregateStats = {
           val validLeaderEpochs = fromLeaderEpochCacheToEpochs(log)
 
           remoteLogMetadataManager.listRemoteLogSegments(tpId).asScala
@@ -631,10 +631,10 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
             .getOrElse(RemoteLogAggregateStats(0, 0))
         }
 
-        lazyRemoteLogSize.getOrCompute(computeRemoteLogSize) match {
+        remoteLogAggregateStatsCache.getOrCompute(computeRemoteLogAggregateStats) match {
           case RemoteLogAggregateStats(remoteLogSizeBytes, numMetadataSegments) =>
-            brokerTopicStats.tierLagStats(tpId.topicPartition().topic())
-              .setRemoteLogAggregateData(tpId.topicPartition().partition(), remoteLogSizeBytes, numMetadataSegments)
+            brokerTopicStats.partitionAggregatedStats(tpId.topicPartition().topic())
+              .setRemoteLogAggregateStats(tpId.topicPartition().partition(), remoteLogSizeBytes, numMetadataSegments)
 
             remoteLogSizeBytes + log.localOnlyLogSegmentsSize
         }
@@ -651,7 +651,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           val (checkTimestampRetention, cleanupTs) = (retentionMs > -1, time.milliseconds() - retentionMs)
 
           val shouldDeleteBySize = log.config.retentionSize > -1
-          val totalLogSize = computeTotalLogSizeAndPublishMetrics(log)
+          val totalLogSize = computeTotalLogSizeAndUpdateMetrics(log)
           var remainingSize =
             if (shouldDeleteBySize) totalLogSize - log.config.retentionSize
             else 0
@@ -663,7 +663,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
               metadata, checkTimestampRetention && _.maxTimestampMs() <= cleanupTs)
             if (isSegmentDeleted) {
               remainingSize = Math.max(0, remainingSize - metadata.segmentSizeInBytes())
-              lazyRemoteLogSize.subtract(metadata.segmentSizeInBytes())
+              remoteLogAggregateStatsCache.subtract(metadata.segmentSizeInBytes())
 
               // It is fine to have logStartOffset as `metadata.endOffset() + 1` as the segment offset intervals
               // are ascending with in an epoch.
@@ -683,7 +683,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
               } else false
             })
             if (isSegmentDeleted) {
-              lazyRemoteLogSize.subtract(metadata.segmentSizeInBytes())
+              remoteLogAggregateStatsCache.subtract(metadata.segmentSizeInBytes())
 
               logStartOffset = Some(metadata.endOffset() + 1)
               info(s"Deleted remote log segment ${metadata.remoteLogSegmentId()} due to retention size " +
