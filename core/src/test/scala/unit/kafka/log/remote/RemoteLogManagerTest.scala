@@ -557,7 +557,7 @@ class RemoteLogManagerTest {
     expect(log.config).andReturn(logConfig).anyTimes()
     expect(log.logEndOffset).andReturn(segmentCount * recordsPerSegment + 1).anyTimes()
     expect(log.size).andReturn(0).anyTimes()
-    expect(log.validLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
+    expect(log.localOnlyLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
     val localLogStartOffset = recordsPerSegment * segmentCount
     expect(log.localLogStartOffset).andReturn(localLogStartOffset).anyTimes()
 
@@ -573,7 +573,6 @@ class RemoteLogManagerTest {
     val segmentMetadataList = listRemoteLogSegmentMetadataByTime(segmentCount, deletableSegmentCount, recordsPerSegment)
     expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), anyInt()))
       .andReturn(Optional.empty()).anyTimes()
-    expect(rlmmManager.listRemoteLogSegments(topicIdPartition)).andReturn(segmentMetadataList.iterator.asJava).anyTimes()
     expect(rlmmManager.listRemoteLogSegments(EasyMock.eq(topicIdPartition), anyInt())).andAnswer(() => {
       val leaderEpoch = getCurrentArgument[Int](1)
       if (leaderEpoch == 0)
@@ -611,9 +610,8 @@ class RemoteLogManagerTest {
     epochCheckpoints.foreach { case (epoch, startOffset) => cache.assign(epoch, startOffset) }
     val currentLeaderEpoch = epochCheckpoints.last._1
 
-    val overlappingLogSegmentsSize = 3 * recordsPerSegment
-    val localLogSegmentsSize = 500L + overlappingLogSegmentsSize
-    val retentionSize = (segmentCount - deletableSegmentCount) * 100 + (localLogSegmentsSize - overlappingLogSegmentsSize)
+    val localOnlyLogSegmentsSize = 500L
+    val retentionSize = (segmentCount - deletableSegmentCount) * 100 + localOnlyLogSegmentsSize
     val logConfig: LogConfig = createMock(classOf[LogConfig])
     expect(logConfig.retentionMs).andReturn(-1).anyTimes()
     expect(logConfig.retentionSize).andReturn(retentionSize).anyTimes()
@@ -622,9 +620,7 @@ class RemoteLogManagerTest {
     expect(log.leaderEpochCache).andReturn(Option(cache)).anyTimes()
     expect(log.config).andReturn(logConfig).anyTimes()
     expect(log.logEndOffset).andReturn(segmentCount * recordsPerSegment + 1).anyTimes()
-    expect(log.validLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
-    val localLogStartOffset = recordsPerSegment * segmentCount - overlappingLogSegmentsSize
-    expect(log.localLogStartOffset).andReturn(localLogStartOffset).anyTimes()
+    expect(log.localOnlyLogSegmentsSize).andReturn(localOnlyLogSegmentsSize).anyTimes()
 
     var logStartOffset: Option[Long] = None
     val rsmManager: ClassLoaderAwareRemoteStorageManager = createMock(classOf[ClassLoaderAwareRemoteStorageManager])
@@ -660,8 +656,10 @@ class RemoteLogManagerTest {
 
     assertEquals(deletableSegmentCount, args1.getValues.size())
     if (deletableSegmentCount > 0) {
-      val expectedEndMetadata = segmentMetadataList(deletableSegmentCount-1)
-      assertEquals(segmentMetadataList.head, args1.getValues.asScala.head)
+      val expectedDeletedSegments = segmentMetadataList.drop(1)
+      val expectedEndMetadata = expectedDeletedSegments(deletableSegmentCount-1)
+      // first segment is not in the lineage, so we don't delete it
+      assertEquals(expectedDeletedSegments.head, args1.getValues.asScala.head)
       assertEquals(expectedEndMetadata, args1.getValues.asScala.reverse.head)
       assertEquals(expectedEndMetadata.endOffset()+1, logStartOffset.get)
     }
@@ -678,9 +676,8 @@ class RemoteLogManagerTest {
     epochCheckpoints.foreach { case (epoch, startOffset) => cache.assign(epoch, startOffset) }
     val currentLeaderEpoch = epochCheckpoints.last._1
 
-    val overlappingLogSegmentsSize = 3 * recordsPerSegment
     val localLogSegmentsSize = 500L
-    val retentionSize = (segmentCount - deletableSegmentCountBySize) * 100 + (localLogSegmentsSize - overlappingLogSegmentsSize)
+    val retentionSize = (segmentCount - deletableSegmentCountBySize) * 100 + localLogSegmentsSize
     val logConfig: LogConfig = createMock(classOf[LogConfig])
     expect(logConfig.retentionMs).andReturn(1).anyTimes()
     expect(logConfig.retentionSize).andReturn(retentionSize).anyTimes()
@@ -690,8 +687,9 @@ class RemoteLogManagerTest {
     expect(log.config).andReturn(logConfig).anyTimes()
     expect(log.logEndOffset).andReturn(segmentCount * recordsPerSegment + 1).anyTimes()
     expect(log.validLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
-    val localLogStartOffset = recordsPerSegment * segmentCount - overlappingLogSegmentsSize
+    val localLogStartOffset = recordsPerSegment * segmentCount
     expect(log.localLogStartOffset).andReturn(localLogStartOffset).anyTimes()
+    expect(log.localOnlyLogSegmentsSize).andReturn(localLogSegmentsSize).anyTimes()
 
 
     var logStartOffset: Option[Long] = None
@@ -734,6 +732,119 @@ class RemoteLogManagerTest {
       assertEquals(expectedEndMetadata, args1.getValues.asScala.reverse.head)
       assertEquals(expectedEndMetadata.endOffset()+1, logStartOffset.get)
     }
+    verify(logConfig, log, rlmmManager, rsmManager)
+  }
+
+  @Test
+  def testLazyRemoteLogSize(): Unit = {
+    val segmentCount = 50
+    val retainedSegmentCount = 40
+    val initialDeletableCount = segmentCount - retainedSegmentCount
+
+    val recordsPerSegment = 100
+    val epochCheckpoints = Seq(0 -> 0, 1 -> 20, 3 -> 50, 4 -> 100)
+    epochCheckpoints.foreach { case (epoch, startOffset) => cache.assign(epoch, startOffset) }
+    val currentLeaderEpoch = epochCheckpoints.last._1
+
+    // Deletion setup
+    val retentionSize = retainedSegmentCount * 100
+    val logConfig: LogConfig = createMock(classOf[LogConfig])
+    expect(logConfig.retentionMs)
+      .andReturn(1) // Only delete by time the first round
+      .andReturn(-1).anyTimes()
+    expect(logConfig.retentionSize).andReturn(retentionSize).anyTimes()
+
+    val log: Log = createMock(classOf[Log])
+    expect(log.leaderEpochCache).andReturn(Option(cache)).anyTimes()
+    expect(log.config).andReturn(logConfig).anyTimes()
+    expect(log.localOnlyLogSegmentsSize).andReturn(0L).anyTimes()
+
+    // Upload setup
+    val activeSegment: LogSegment = createMock(classOf[LogSegment])
+    expect(activeSegment.baseOffset).andReturn(170).anyTimes()
+
+    val uploadSegmentSizeInBytes = 1000
+    val expectedSegmentsToDeleteAfterUpload = uploadSegmentSizeInBytes / recordsPerSegment
+    val fileRecords = mockFileRecords(uploadSegmentSizeInBytes)
+    val segmentToUpload = mockLogSegment(111, 160, fileRecords)
+    val segmentNotToUpload = mockLogSegment(160, 170, fileRecords)
+
+    val producerStateManager: ProducerStateManager = createMock(classOf[ProducerStateManager])
+    expect(producerStateManager.fetchSnapshot(anyLong())).andReturn(Some(fileRecords.file()))
+    expect(log.producerStateManager).andReturn(producerStateManager).anyTimes()
+
+    expect(log.lastStableOffset).andReturn(161)
+    expect(log.activeSegment).andReturn(activeSegment).anyTimes()
+    expect(log.logStartOffset).andReturn(0)
+    expect(log.logSegments(EasyMock.eq(111L), EasyMock.eq(161L))).andReturn(Seq(segmentToUpload, segmentNotToUpload))
+    expect(log.updateRemoteIndexHighestOffset(EasyMock.eq(159L)))
+
+    expect(log.logEndOffset).andReturn(segmentCount * recordsPerSegment + 1).anyTimes()
+
+    var logStartOffset: Option[Long] = None
+    val rsmManager: ClassLoaderAwareRemoteStorageManager = createMock(classOf[ClassLoaderAwareRemoteStorageManager])
+    val rlmmManager: RemoteLogMetadataManager = createMock(classOf[RemoteLogMetadataManager])
+    val remoteLogManager =
+      new RemoteLogManager(_ => Option(log), (_, startOffset) => logStartOffset = Option(startOffset), rlmConfig, time,
+        brokerId, clusterId, logsDir, brokerTopicStats) {
+        override private[remote] def createRemoteStorageManager(): ClassLoaderAwareRemoteStorageManager = rsmManager
+        override private[remote] def createRemoteLogMetadataManager() = rlmmManager
+      }
+    val segmentMetadataList = listRemoteLogSegmentMetadataByTime(segmentCount, 5, recordsPerSegment)
+    mockHighestOffsetForEpoch(rlmmManager, epochCheckpoints, 110)
+
+    // Total size should only be computed from scratch twice
+    expect(rlmmManager.listRemoteLogSegments(topicIdPartition))
+      .andReturn(segmentMetadataList.iterator.asJava).once()
+      .andReturn(segmentMetadataList.iterator.asJava).once()
+    expect(rlmmManager.listRemoteLogSegments(EasyMock.eq(topicIdPartition), anyInt())).andAnswer(() => {
+      val leaderEpoch = getCurrentArgument[Int](1)
+      if (leaderEpoch == 0)
+        segmentMetadataList.take(1).iterator.asJava
+      else if (leaderEpoch == 4)
+        segmentMetadataList.drop(1).iterator.asJava
+      else
+        Collections.emptyIterator()
+    }).anyTimes()
+    expect(rlmmManager.updateRemoteLogSegmentMetadata(anyObject(classOf[RemoteLogSegmentMetadataUpdate]))).anyTimes()
+    expect(rlmmManager.addRemoteLogSegmentMetadata(anyObject(classOf[RemoteLogSegmentMetadata]))).anyTimes()
+
+    expect(
+      rsmManager.copyLogSegmentData(anyObject(classOf[RemoteLogSegmentMetadata]), anyObject(classOf[LogSegmentData])))
+
+    val args1 = newCapture[RemoteLogSegmentMetadata](CaptureType.ALL)
+    expect(rsmManager.deleteLogSegmentData(capture(args1))).anyTimes()
+    replay(logConfig, log, rlmmManager, rsmManager, producerStateManager, activeSegment)
+
+    val rlmTask = new remoteLogManager.RLMTask(topicIdPartition)
+    rlmTask.convertToLeader(currentLeaderEpoch)
+
+    // First deletion which computes the initial size and updates it, deleting by time and by size
+    rlmTask.handleExpiredRemoteLogSegments()
+    assertEquals(initialDeletableCount, args1.getValues.size())
+
+    // Upload and ensure deletion accounts for extra extra segments
+    rlmTask.copyLogSegmentsToRemote()
+    rlmTask.handleExpiredRemoteLogSegments()
+    val secondDeletionCount = args1.getValues.size() - initialDeletableCount
+    assertEquals(expectedSegmentsToDeleteAfterUpload, secondDeletionCount)
+
+    // Set to follower and back to leader and confirm that total log size is recomputed
+    // e.g. it should give the original values and delete the same as the initial deletion
+    rlmTask.convertToFollower()
+    rlmTask.convertToLeader(currentLeaderEpoch)
+
+    rlmTask.handleExpiredRemoteLogSegments()
+    val thirdDeletionCount = args1.getValues.size() - initialDeletableCount - expectedSegmentsToDeleteAfterUpload
+    assertEquals(initialDeletableCount, thirdDeletionCount)
+
+    // Bump leader epoch. This should not reset the total log size
+    rlmTask.convertToLeader(currentLeaderEpoch + 1)
+    rlmTask.handleExpiredRemoteLogSegments()
+    val fourthDeletionCount = args1.getValues.size() - initialDeletableCount * 2 - expectedSegmentsToDeleteAfterUpload
+    assertEquals(0, fourthDeletionCount)
+
+    // Make sure listRemoteSegmentMetadata is only called twice
     verify(logConfig, log, rlmmManager, rsmManager)
   }
 
@@ -824,49 +935,14 @@ class RemoteLogManagerTest {
     val activeSegment: LogSegment = createMock(classOf[LogSegment])
     expect(activeSegment.baseOffset).andReturn(170).anyTimes()
 
-    val fileRecords: FileRecords = createMock(classOf[FileRecords])
-    val file: File = createMock(classOf[File])
-
-    val lazyOffsetIndex: LazyIndex[OffsetIndex] = createMock(classOf[LazyIndex[OffsetIndex]])
-    val lazyTimeIndex: LazyIndex[TimeIndex] = createMock(classOf[LazyIndex[TimeIndex]])
-    val offsetIndex: OffsetIndex = createMock(classOf[OffsetIndex])
-    val timeIndex: TimeIndex = createMock(classOf[TimeIndex])
-    val txIndex: TransactionIndex = createMock(classOf[TransactionIndex])
-
-    expect(lazyOffsetIndex.get).andReturn(offsetIndex)
-    expect(lazyTimeIndex.get).andReturn(timeIndex)
-    expect(offsetIndex.path).andReturn(Paths.get("home", "pinkf"))
-    expect(timeIndex.path).andReturn(Paths.get("home", "nellyf"))
-    expect(txIndex.path).andReturn(Paths.get("home", "amyl"))
-
-    val segmentToUpload: LogSegment = createMock(classOf[LogSegment])
-    expect(segmentToUpload.baseOffset).andReturn(111).anyTimes()
-    expect(segmentToUpload.log).andReturn(fileRecords).anyTimes()
-    expect(segmentToUpload.readNextOffset).andReturn(160)
-    expect(segmentToUpload.largestTimestamp).andReturn(8L)
-    expect(segmentToUpload.lazyOffsetIndex).andReturn(lazyOffsetIndex)
-    expect(segmentToUpload.lazyTimeIndex).andReturn(lazyTimeIndex)
-    expect(segmentToUpload.txnIndex).andReturn(txIndex)
-
-    val segmentNotToUpload: LogSegment = createMock(classOf[LogSegment])
-    expect(segmentNotToUpload.baseOffset).andReturn(160).anyTimes()
-    expect(segmentNotToUpload.log).andReturn(fileRecords).anyTimes()
-    expect(segmentNotToUpload.readNextOffset).andReturn(170)
-    expect(segmentNotToUpload.largestTimestamp).andReturn(8L)
-    expect(segmentNotToUpload.lazyOffsetIndex).andReturn(lazyOffsetIndex)
-    expect(segmentNotToUpload.lazyTimeIndex).andReturn(lazyTimeIndex)
-    expect(segmentNotToUpload.txnIndex).andReturn(txIndex)
-
-    expect(fileRecords.file).andReturn(file).anyTimes()
-    expect(fileRecords.sizeInBytes()).andReturn(1024)
-    expect(file.getName).andReturn("00000000000111.log").anyTimes()
-    expect(file.toPath).andReturn(Paths.get("home", "philc")).anyTimes()
-
-    val logConfig: LogConfig = createMock(classOf[LogConfig])
+    val fileRecords = mockFileRecords()
+    val segmentToUpload = mockLogSegment(111, 160, fileRecords)
+    val segmentNotToUpload = mockLogSegment(160, 170, fileRecords)
 
     val producerStateManager: ProducerStateManager = createMock(classOf[ProducerStateManager])
-    expect(producerStateManager.fetchSnapshot(anyLong())).andReturn(Some(file))
+    expect(producerStateManager.fetchSnapshot(anyLong())).andReturn(Some(fileRecords.file()))
 
+    val logConfig: LogConfig = createMock(classOf[LogConfig])
     val log: Log = createMock(classOf[Log])
     expect(log.leaderEpochCache).andReturn(Option(cache)).anyTimes()
     expect(log.config).andReturn(logConfig).anyTimes()
@@ -885,17 +961,9 @@ class RemoteLogManagerTest {
     expect(rlmmManager.addRemoteLogSegmentMetadata(anyObject(classOf[RemoteLogSegmentMetadata]))).anyTimes()
     expect(rlmmManager.updateRemoteLogSegmentMetadata(anyObject(classOf[RemoteLogSegmentMetadataUpdate]))).anyTimes()
 
-    expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(0)))
-      .andReturn(Optional.of(19L)).anyTimes()
-    expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(1)))
-      .andReturn(Optional.of(49L)).anyTimes()
-    expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(3)))
-      .andReturn(Optional.of(99L)).anyTimes()
-    expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(4)))
-      .andReturn(Optional.of(110L)).anyTimes()
+    mockHighestOffsetForEpoch(rlmmManager, epochCheckpoints, 110)
 
-    replay(log, rlmmManager, activeSegment, segmentToUpload, segmentNotToUpload, fileRecords, file,
-      producerStateManager, lazyOffsetIndex, lazyTimeIndex, offsetIndex, timeIndex, txIndex)
+    replay(log, rlmmManager, activeSegment, producerStateManager)
 
     val remoteLogManager =
       new RemoteLogManager(_ => Option(log), (_, startOffset) => logStartOffset = Option(startOffset), rlmConfig, time,
@@ -911,6 +979,57 @@ class RemoteLogManagerTest {
 
     val lag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).lag()
     assertEquals(10L, lag)
+  }
+
+  private def mockHighestOffsetForEpoch(rlmmManager: RemoteLogMetadataManager,
+                                        epochCheckpoints: Seq[(Int, Int)], highestOffsetForLastEpoch: Long): Unit = {
+    for ((curr, next) <- epochCheckpoints zip epochCheckpoints.drop(1)) {
+      expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(curr._1)))
+        .andReturn(Optional.of(next._2 - 1)).anyTimes()
+    }
+    expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), EasyMock.eq(epochCheckpoints.last._1)))
+      .andReturn(Optional.of(highestOffsetForLastEpoch)).anyTimes()
+  }
+
+  private def mockLogSegment(baseOffset: Int, readNextOffset: Int, fileRecords: FileRecords) = {
+    val lazyOffsetIndex: LazyIndex[OffsetIndex] = createMock(classOf[LazyIndex[OffsetIndex]])
+    val lazyTimeIndex: LazyIndex[TimeIndex] = createMock(classOf[LazyIndex[TimeIndex]])
+    val offsetIndex: OffsetIndex = createMock(classOf[OffsetIndex])
+    val timeIndex: TimeIndex = createMock(classOf[TimeIndex])
+    val txIndex: TransactionIndex = createMock(classOf[TransactionIndex])
+
+    expect(lazyOffsetIndex.get).andReturn(offsetIndex)
+    expect(lazyTimeIndex.get).andReturn(timeIndex)
+    expect(offsetIndex.path).andReturn(Paths.get("home", "offsetIndex"))
+    expect(timeIndex.path).andReturn(Paths.get("home", "timeIndex"))
+    expect(txIndex.path).andReturn(Paths.get("home", "txIndex"))
+
+    val segment: LogSegment = createMock(classOf[LogSegment])
+    expect(segment.baseOffset).andReturn(baseOffset).anyTimes()
+    expect(segment.log).andReturn(fileRecords).anyTimes()
+    expect(segment.readNextOffset).andReturn(readNextOffset)
+    expect(segment.largestTimestamp).andReturn(8L)
+    expect(segment.lazyOffsetIndex).andReturn(lazyOffsetIndex)
+    expect(segment.lazyTimeIndex).andReturn(lazyTimeIndex)
+    expect(segment.txnIndex).andReturn(txIndex)
+
+    replay(lazyOffsetIndex, lazyTimeIndex, offsetIndex, timeIndex, txIndex, segment)
+
+    segment
+  }
+
+  private def mockFileRecords(sizeInBytes: Int = 1024): FileRecords = {
+    val file: File = createMock(classOf[File])
+    expect(file.getName).andReturn("00000000000111.log").anyTimes()
+    expect(file.toPath).andReturn(Paths.get("home", "philc")).anyTimes()
+
+    val fileRecords: FileRecords = createMock(classOf[FileRecords])
+    expect(fileRecords.file).andReturn(file).anyTimes()
+    expect(fileRecords.sizeInBytes()).andReturn(sizeInBytes)
+
+    replay(file, fileRecords)
+
+    fileRecords
   }
 
   private def listRemoteLogSegmentMetadataByTime(segmentCount: Int,
@@ -936,10 +1055,12 @@ class RemoteLogManagerTest {
     val remoteEpochs = firstEntry.segmentLeaderEpochs()
     val firstEpoch = remoteEpochs.firstEntry()
     val secondEpoch = remoteEpochs.higherEntry(firstEpoch.getKey)
+
     val faultyEpochs = new util.TreeMap[Integer, lang.Long]()
     faultyEpochs.put(firstEpoch.getKey, firstEpoch.getValue)
     faultyEpochs.put(secondEpoch.getKey, secondEpoch.getValue + 1)
     faultyEpochs.putAll(remoteEpochs.subMap(secondEpoch.getKey, false, remoteEpochs.lastKey(), true))
+
     new RemoteLogSegmentMetadata(
       firstEntry.remoteLogSegmentId(),
       firstEntry.startOffset(),
@@ -955,9 +1076,14 @@ class RemoteLogManagerTest {
   private def faultyLastEntry(lastEntry: RemoteLogSegmentMetadata): RemoteLogSegmentMetadata = {
     val remoteEpochs = lastEntry.segmentLeaderEpochs()
     val lastEpoch = remoteEpochs.lastEntry()
+
     val faultyEpochs = new util.TreeMap[Integer, lang.Long]()
     faultyEpochs.putAll(remoteEpochs.subMap(remoteEpochs.firstKey(), true, remoteEpochs.lastKey(), false))
-    faultyEpochs.put(lastEpoch.getKey, lastEpoch.getValue - 1)
+
+    // Set this to -1 to simulate the case where the remote epoch has a lower start offset than the remote epoch
+    // Avoid the last epoch as it is the active leader epoch and cannot have been an unclean leader election
+    faultyEpochs.put(lastEpoch.getKey - 1, -1)
+
     new RemoteLogSegmentMetadata(
       lastEntry.remoteLogSegmentId(),
       lastEntry.startOffset(),
@@ -972,8 +1098,8 @@ class RemoteLogManagerTest {
 
   private def listRemoteLogSegmentMetadataWithFaultyRemoteSegments(segmentCount: Int, recordsPerSegment: Int): List[RemoteLogSegmentMetadata] = {
     val correctList = listRemoteLogSegmentMetadata(segmentCount, recordsPerSegment)
-    val firstEntry = correctList(0)
-    val lastEntry = correctList(correctList.length - 1)
+    val firstEntry = correctList.head
+    val lastEntry = correctList.last
     // We want the first leader epoch in the first entry to end higher than the local one
     // and the last leader epoch in the last entry to start lower than the local one.
     // To achieve the first we need to increase the start offset of the second leader epoch

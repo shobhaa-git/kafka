@@ -2093,6 +2093,11 @@ class Log(@volatile private var _dir: File,
   def validLogSegmentsSize: Long = Log.sizeInBytes(logSegments.filter(_.baseOffset >= localLogStartOffset))
 
   /**
+   * The size of the log in bytes for segments not yet in remote storage
+   */
+  def localOnlyLogSegmentsSize: Long = Log.sizeInBytes(logSegments.filter(_.baseOffset > highestOffsetWithRemoteIndex))
+
+  /**
    * The offset metadata of the next message that will be appended to the log
    */
   def logEndOffsetMetadata: LogOffsetMetadata = nextOffsetMetadata
@@ -3010,8 +3015,8 @@ case object RetentionMsBreach extends SegmentDeletionReason {
 
 case object RetentionSizeBreach extends SegmentDeletionReason {
   override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    val retentionSize = log.localRetentionSize
     var size = log.size
+    val retentionSize = if (log.remoteLogEnabled()) log.config.localRetentionBytes else log.config.retentionSize
     toDelete.foreach { segment =>
       size -= segment.size
       log.info(s"Deleting segment $segment due to retention size $retentionSize breach. Log size " +

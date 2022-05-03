@@ -260,7 +260,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
      * 1. LeaderAndIsrRequest arrives before ConfigHandler config change for remoteStorageEnable: In this case, there will be a separate call for config change.
      * 2. LeaderAndIsrRequest arrives after ConfigHandler config for remoteStorageEnable: In this case, the config changes will not be lost as there is a fetchLog call now to fetch the log updates.
      * 3. LeaderAndIsrRequest arrives at same time as ConfigHandler config for remoteStorageEnable: Falls in to 1 or 2 above depending on sequencing
-     * 
+     *
      * This method is safe for all the three scenarios and will be able to pick up the updated configuration.
      */
     onLeadershipChangeLock synchronized {
@@ -381,6 +381,9 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
     // and needs to be fetched inside the task's run() method.
     private var readOffsetOption: Option[Long] = None
 
+    private val lazyRemoteLogSize: LazyRemoteLogSize =
+      new LazyRemoteLogSize(brokerId, tpId)
+
     //todo-updating log with remote index highest offset -- should this be required?
     // fetchLog(tp.topicPartition()).foreach { log => log.updateRemoteIndexHighestOffset(readOffset) }
 
@@ -397,6 +400,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
     def convertToFollower(): Unit = {
       leaderEpoch = -1
+      lazyRemoteLogSize.clear()
     }
 
     def copyLogSegmentsToRemote(): Unit = {
@@ -480,6 +484,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                   RemoteLogSegmentState.COPY_SEGMENT_FINISHED, brokerId)
 
                 remoteLogMetadataManager.updateRemoteLogSegmentMetadata(rlsmAfterCreate)
+                lazyRemoteLogSize.add(remoteLogSegmentMetadata.segmentSizeInBytes())
                 brokerTopicStats.topicStats(tpId.topicPartition().topic())
                   .remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
                 brokerTopicStats.allTopicsStats.remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
@@ -613,21 +618,16 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           })
       }
 
-      def totalLogSize(segmentMetadataList: scala.Seq[RemoteLogSegmentMetadata], log: Log): Long = {
-        val localLogStartOffset = log.localLogStartOffset // Cache the value
+      def totalLogSize(log: Log): Long = {
+        def computeRemoteLogSize(): Long = {
+          val validLeaderEpochs = fromLeaderEpochCacheToEpochs(log)
 
-        val validLeaderEpochs = fromLeaderEpochCacheToEpochs(log)
+          remoteLogMetadataManager.listRemoteLogSegments(tpId).asScala
+            .filter(doesRemoteSegmentHaveGoodLineage(validLeaderEpochs, _, log.logEndOffset))
+            .map(_.segmentSizeInBytes()).sum
+        }
 
-        val remoteOnlyLogSize = segmentMetadataList
-          .filter(_.endOffset() < localLogStartOffset)
-          .filter(segmentMetadata => {
-            doesRemoteSegmentHaveGoodLineage(validLeaderEpochs, segmentMetadata, log.logEndOffset)
-          })
-          .map(_.segmentSizeInBytes()).sum
-
-        val localLogSize = log.validLogSegmentsSize
-
-        localLogSize + remoteOnlyLogSize
+        lazyRemoteLogSize.getOrCompute(computeRemoteLogSize) + log.localOnlyLogSegmentsSize
       }
 
       def fromLeaderEpochCacheToEpochs(log: Log): util.TreeMap[Integer, lang.Long] = {
@@ -636,64 +636,69 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
 
       try {
         // cleanup remote log segments and update the log start offset if applicable.
-        // Compute total size, this can be pushed to RLMM by introducing a new method instead of going through
-        // the collection every time.
-        val segmentMetadataList = remoteLogMetadataManager.listRemoteLogSegments(tpId).asScala.toSeq
-        if (segmentMetadataList.nonEmpty) {
-          fetchLog(tpId.topicPartition()).foreach { log =>
-            val retentionMs = log.config.retentionMs
-            val totalSize = totalLogSize(segmentMetadataList, log)
+        fetchLog(tpId.topicPartition()).foreach { log =>
+          val retentionMs = log.config.retentionMs
+          val (checkTimestampRetention, cleanupTs) = (retentionMs > -1, time.milliseconds() - retentionMs)
 
-            val (checkTimestampRetention, cleanupTs) = (retentionMs > -1, time.milliseconds() - retentionMs)
-            val checkSizeRetention = log.config.retentionSize > -1
-            var remainingSize = totalSize - log.config.retentionSize
-            var logStartOffset: Option[Long] = None
+          val shouldDeleteBySize = log.config.retentionSize > -1
+          var remainingSize =
+            if (shouldDeleteBySize) totalLogSize(log) - log.config.retentionSize
+            else 0
 
-            def deleteRetentionTimeBreachedSegments(metadata: RemoteLogSegmentMetadata): Boolean = {
-              val isSegmentDeleted = deleteRemoteLogSegment(
-                metadata, checkTimestampRetention && _.maxTimestampMs() <= cleanupTs)
-              if (isSegmentDeleted) {
-                remainingSize = Math.max(0, remainingSize - metadata.segmentSizeInBytes())
-                // It is fine to have logStartOffset as `metadata.endOffset() + 1` as the segment offset intervals
-                // are ascending with in an epoch.
-                logStartOffset = Some(metadata.endOffset() + 1)
-                info(s"Deleted remote log segment ${metadata.remoteLogSegmentId()} due to retention time " +
-                  s"${retentionMs}ms breach based on the largest record timestamp in the segment")
-              }
-              isSegmentDeleted
+          var logStartOffset: Option[Long] = None
+
+          def deleteRetentionTimeBreachedSegments(metadata: RemoteLogSegmentMetadata): Boolean = {
+            val isSegmentDeleted = deleteRemoteLogSegment(
+              metadata, checkTimestampRetention && _.maxTimestampMs() <= cleanupTs)
+            if (isSegmentDeleted) {
+              remainingSize = Math.max(0, remainingSize - metadata.segmentSizeInBytes())
+              lazyRemoteLogSize.subtract(metadata.segmentSizeInBytes())
+
+              // It is fine to have logStartOffset as `metadata.endOffset() + 1` as the segment offset intervals
+              // are ascending with in an epoch.
+              logStartOffset = Some(metadata.endOffset() + 1)
+              info(s"Deleted remote log segment ${metadata.remoteLogSegmentId()} due to retention time " +
+                s"${retentionMs}ms breach based on the largest record timestamp in the segment")
             }
-
-            def deleteRetentionSizeBreachedSegments(metadata: RemoteLogSegmentMetadata): Boolean = {
-              val isSegmentDeleted = deleteRemoteLogSegment(metadata, metadata => {
-                // Assumption that segments contain size > 0
-                if (checkSizeRetention && remainingSize > 0) {
-                  remainingSize -= metadata.segmentSizeInBytes()
-                  remainingSize >= 0
-                } else false
-              })
-              if (isSegmentDeleted) {
-                logStartOffset = Some(metadata.endOffset() + 1)
-                info(s"Deleted remote log segment ${metadata.remoteLogSegmentId()} due to retention size " +
-                  s"${log.config.retentionSize} breach. Log size after deletion will be " +
-                  s"${remainingSize + log.config.retentionSize}.")
-              }
-              isSegmentDeleted
-            }
-
-            log.leaderEpochCache.foreach { cache =>
-              cache.epochEntries.find { epochEntry =>
-                val segmentsIterator = remoteLogMetadataManager.listRemoteLogSegments(tpId, epochEntry.epoch)
-                var isSegmentDeleted = true
-                while (isSegmentDeleted && segmentsIterator.hasNext) {
-                  val metadata = segmentsIterator.next()
-                  isSegmentDeleted = deleteRetentionTimeBreachedSegments(metadata) ||
-                    deleteRetentionSizeBreachedSegments(metadata)
-                }
-                !isSegmentDeleted
-              }
-            }
-            logStartOffset.foreach(handleLogStartOffsetUpdate(tpId.topicPartition(), _))
+            isSegmentDeleted
           }
+
+          def deleteRetentionSizeBreachedSegments(metadata: RemoteLogSegmentMetadata): Boolean = {
+            val isSegmentDeleted = deleteRemoteLogSegment(metadata, metadata => {
+              // Assumption that segments contain size > 0
+                if (shouldDeleteBySize && remainingSize > 0) {
+                remainingSize -= metadata.segmentSizeInBytes()
+                remainingSize >= 0
+              } else false
+            })
+            if (isSegmentDeleted) {
+              lazyRemoteLogSize.subtract(metadata.segmentSizeInBytes())
+
+              logStartOffset = Some(metadata.endOffset() + 1)
+              info(s"Deleted remote log segment ${metadata.remoteLogSegmentId()} due to retention size " +
+                s"${log.config.retentionSize} breach. Log size after deletion will be " +
+                s"${remainingSize + log.config.retentionSize}.")
+            }
+            isSegmentDeleted
+          }
+
+          val validLeaderEpochs = fromLeaderEpochCacheToEpochs(log)
+          log.leaderEpochCache.foreach { cache =>
+            cache.epochEntries.find { epochEntry =>
+              val segmentsIterator =
+                remoteLogMetadataManager.listRemoteLogSegments(tpId, epochEntry.epoch).asScala
+                  .filter(doesRemoteSegmentHaveGoodLineage(validLeaderEpochs, _, log.logEndOffset))
+
+              var isSegmentDeleted = true
+              while (isSegmentDeleted && segmentsIterator.hasNext) {
+                val metadata = segmentsIterator.next()
+                isSegmentDeleted = deleteRetentionTimeBreachedSegments(metadata) ||
+                  deleteRetentionSizeBreachedSegments(metadata)
+              }
+              !isSegmentDeleted
+            }
+          }
+          logStartOffset.foreach(handleLogStartOffsetUpdate(tpId.topicPartition(), _))
         }
       } catch {
         case ex: Exception =>
@@ -711,6 +716,7 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
         if (isLeader()) {
           // a. copy log segments to remote store
           copyLogSegmentsToRemote()
+
           // b. cleanup/delete expired remote segments
           // Followers will cleanup the local log cleanup based on the local logStartOffset.
           // We do not need any cleanup on followers from remote segments perspective.
