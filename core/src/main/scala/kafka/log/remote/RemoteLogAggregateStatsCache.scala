@@ -34,11 +34,11 @@ private[remote] case class RemoteLogAggregateStats(remoteLogSizeBytes: Long, num
     RemoteLogAggregateStats(this.remoteLogSizeBytes + other.remoteLogSizeBytes,
       this.numMetadataSegments + other.numMetadataSegments)
 
-  def subtract(removedSegmentBytes: Long): Option[RemoteLogAggregateStats] = {
-    if (remoteLogSizeBytes < removedSegmentBytes || numMetadataSegments < 1) {
-      None
-    } else Some(RemoteLogAggregateStats(remoteLogSizeBytes - removedSegmentBytes, numMetadataSegments - 1))
-  }
+  def subtract(removedSegmentBytes: Long): RemoteLogAggregateStats =
+    RemoteLogAggregateStats(remoteLogSizeBytes - removedSegmentBytes, numMetadataSegments - 1)
+
+  def isInvalid: Boolean =
+    remoteLogSizeBytes < 0 || (remoteLogSizeBytes > 0 && numMetadataSegments <= 0)
 }
 
 private[remote] class RemoteLogAggregateStatsCache(brokerId: Int, tpId: TopicIdPartition, time: Time) extends Logging {
@@ -92,7 +92,14 @@ private[remote] class RemoteLogAggregateStatsCache(brokerId: Int, tpId: TopicIdP
 
   def subtract(deletedSegmentSizeInBytes: Long): Unit = {
     this.synchronized {
-      _remoteLogAggregateStats = _remoteLogAggregateStats.flatMap(_.subtract(deletedSegmentSizeInBytes))
+      _remoteLogAggregateStats = _remoteLogAggregateStats.flatMap(oldStats => {
+        val newStats = oldStats.subtract(deletedSegmentSizeInBytes)
+        if (newStats.isInvalid) {
+          warn(s"Mismatch between cached stats $oldStats and " +
+            s"deleted segment of size $deletedSegmentSizeInBytes. Clearing cache")
+          None
+        } else Some(newStats)
+      })
     }
   }
 }

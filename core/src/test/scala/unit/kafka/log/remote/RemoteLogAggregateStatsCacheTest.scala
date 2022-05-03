@@ -109,24 +109,22 @@ class RemoteLogAggregateStatsCacheTest {
     assertEquals(1, numComputes)
 
     statsCache.add(2)
-    assertEquals(RemoteLogAggregateStats(2, 1), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
+    statsCache.add(2)
+    assertEquals(RemoteLogAggregateStats(4, 2), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
     statsCache.subtract(2)
-    assertEquals(RemoteLogAggregateStats(0, 0), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(2, 1), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
     statsCache.add(5)
-    assertEquals(RemoteLogAggregateStats(5, 1), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(7, 2), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     // Subtract more than the existing size, so the original size was invalid and we recompute
-    statsCache.subtract(7)
+    statsCache.add(1) // Make sure there are enough segments
+    statsCache.subtract(10)
     assertEquals(RemoteLogAggregateStats(0, 0), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(2, numComputes)
 
-    // Subtract more than the existing number of segments, so the original segment count was invalid and we recompute
+    // Subtract the existing number of segments but leave byte size > 0, so the original segment count was invalid and we recompute
     statsCache.add(2)
-    statsCache.subtract(1)
-    assertEquals(RemoteLogAggregateStats(1, 0), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
-    assertEquals(2, numComputes)
-
     statsCache.subtract(1)
     assertEquals(RemoteLogAggregateStats(0, 0), statsCache.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(3, numComputes)
