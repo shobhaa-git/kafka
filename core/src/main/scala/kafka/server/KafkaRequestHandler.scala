@@ -20,11 +20,11 @@ package kafka.server
 import kafka.network._
 import kafka.utils._
 import kafka.metrics.KafkaMetricsGroup
+
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
-
 import com.yammer.metrics.core.Meter
-import kafka.server.BrokerTopicStats.TotalTierLag
+import kafka.server.BrokerTopicStats.{TotalTierBytesLag, TotalTierOffsetLag}
 import org.apache.kafka.common.internals.FatalExitError
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 
@@ -279,22 +279,49 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
 }
 
 /**
-  * The tier lag of the given topic, defined as the number of records from non-active segments not yet uploaded to
-  * the remote storage tier.
+  * The tier lag of the given topic, where lagging records are defined as records from non-active segments
+  * not yet uploaded to the remote storage tier.
   * @param topicName The topic this metric represents the total lag of.
   */
 class BrokerTopicTierLagMetrics(topicName: String) extends KafkaMetricsGroup {
   private val tags = Map("topic" -> topicName)
+  private val _offsetLag = new BrokerTopicTierLagMetric()
+  private val _bytesLag = new BrokerTopicTierLagMetric()
+
+  newGauge[Long](TotalTierOffsetLag, () => _offsetLag.lag(), tags)
+  newGauge[Long](TotalTierBytesLag, () => _bytesLag.lag(), tags)
+
+  def setLag(partition: Int, partitionOffsetLag: Long, partitionBytesLag: Long): Unit = {
+    _offsetLag.setLag(partition, partitionOffsetLag)
+    _bytesLag.setLag(partition, partitionBytesLag)
+  }
+
+  def removePartition(partition: Int): Unit = {
+    _offsetLag.removePartition(partition)
+    _bytesLag.removePartition(partition)
+  }
+
+  def offsetLag(): Long = _offsetLag.lag()
+  def bytesLag(): Long = _bytesLag.lag()
+
+  def close(): Unit = {
+    removeMetric(TotalTierOffsetLag, tags)
+    removeMetric(TotalTierBytesLag, tags)
+  }
+}
+
+/**
+ * Tier lag calculator
+ */
+class BrokerTopicTierLagMetric {
   private val partitionLags = mutable.Map[Int, Long]()
   private val lock = new Object
   private var _lag = 0L
 
-  newGauge[Long](TotalTierLag, () => lock synchronized { _lag }, tags)
-
   /**
-    * Set the lag of the given partition from the topic tracked by this metric to the given lag.
-    * The total (topic-level) lag is automatically recalculated when this method is called.
-    */
+   * Set the lag of the given partition from the topic tracked by this metric to the given lag.
+   * The total (topic-level) lag is automatically recalculated when this method is called.
+   */
   def setLag(partition: Int, partitionLag: Long): Unit = {
     lock synchronized {
       partitionLags.get(partition).foreach(_lag -= _)
@@ -304,17 +331,15 @@ class BrokerTopicTierLagMetrics(topicName: String) extends KafkaMetricsGroup {
   }
 
   /**
-    * Remove any lag from the given partition from the total (topic-level) lag for the topic tracked by this metric.
-    */
+   * Remove any lag from the given partition from the total (topic-level) lag for the topic tracked by this metric.
+   */
   def removePartition(partition: Int): Unit = {
     lock synchronized {
       partitionLags.remove(partition).foreach(_lag -= _)
     }
   }
 
-  def lag(): Long = _lag
-
-  def close(): Unit = removeMetric(TotalTierLag, tags)
+  def lag(): Long = lock synchronized { _lag }
 }
 
 object BrokerTopicStats {
@@ -335,7 +360,8 @@ object BrokerTopicStats {
   val RemoteBytesOutPerSec = "RemoteBytesOutPerSec"
   val RemoteBytesInPerSec = "RemoteBytesInPerSec"
   val RemoteReadRequestsPerSec = "RemoteReadRequestsPerSec"
-  val TotalTierLag = "TotalTierLag"
+  val TotalTierOffsetLag = "TotalTierOffsetLag"
+  val TotalTierBytesLag = "TotalTierBytesLag"
   val FailedRemoteReadRequestsPerSec = "RemoteReadErrorsPerSec"
   val FailedRemoteWriteRequestsPerSec = "RemoteWriteErrorsPerSec"
 

@@ -764,6 +764,7 @@ class RemoteLogManagerTest {
     // Upload setup
     val activeSegment: LogSegment = createMock(classOf[LogSegment])
     expect(activeSegment.baseOffset).andReturn(170).anyTimes()
+    expect(activeSegment.size).andReturn(0).anyTimes()
 
     val uploadSegmentSizeInBytes = 1000
     val expectedSegmentsToDeleteAfterUpload = uploadSegmentSizeInBytes / recordsPerSegment
@@ -1023,6 +1024,8 @@ class RemoteLogManagerTest {
 
     val activeSegment: LogSegment = createMock(classOf[LogSegment])
     expect(activeSegment.baseOffset).andReturn(170).anyTimes()
+    val activeSegmentSize = 10
+    expect(activeSegment.size).andReturn(activeSegmentSize).anyTimes()
 
     val fileRecords = mockFileRecords()
     val segmentToUpload = mockLogSegment(111, 160, fileRecords)
@@ -1042,6 +1045,8 @@ class RemoteLogManagerTest {
     expect(log.logStartOffset).andReturn(0)
     expect(log.logSegments(EasyMock.eq(111L), EasyMock.eq(161L))).andReturn(Seq(segmentToUpload, segmentNotToUpload))
     expect(log.updateRemoteIndexHighestOffset(EasyMock.eq(159L)))
+    val localOnlyLogSize = 100L
+    expect(log.localOnlyLogSegmentsSize).andReturn(localOnlyLogSize)
 
     var logStartOffset: Option[Long] = None
     val rsmManager: ClassLoaderAwareRemoteStorageManager = createMock(classOf[ClassLoaderAwareRemoteStorageManager])
@@ -1066,8 +1071,10 @@ class RemoteLogManagerTest {
 
     task.copyLogSegmentsToRemote()
 
-    val lag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).lag()
-    assertEquals(10L, lag)
+    val offsetLag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).offsetLag()
+    val bytesLag = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).bytesLag()
+    assertEquals(10L, offsetLag)
+    assertEquals(localOnlyLogSize - activeSegmentSize, bytesLag)
   }
 
   private def mockHighestOffsetForEpoch(rlmmManager: RemoteLogMetadataManager,

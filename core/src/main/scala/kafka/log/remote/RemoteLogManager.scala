@@ -489,6 +489,12 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                   .remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
                 brokerTopicStats.allTopicsStats.remoteBytesOutRate.mark(remoteLogSegmentMetadata.segmentSizeInBytes())
 
+                //todo-tier-storage
+                log.updateRemoteIndexHighestOffset(endOffset)
+                info(s"Copied $fileName to remote storage with segment-id: ${rlsmAfterCreate.remoteLogSegmentId()}")
+
+                readOffsetOption = Some(endOffset)
+
                 //
                 // The tier lag of a topic-partition is defined as the number of records in non-active segments
                 // not yet uploaded to the remote storage.
@@ -500,14 +506,10 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
                 // "activeSegBaseOffset" since the active segment before the segment upload may now have been
                 // rolled over and replaced by a new segment.
                 //
-                val lag = (log.activeSegment.baseOffset - 1) - endOffset
+                val offsetLag = (log.activeSegment.baseOffset - 1) - endOffset
+                val bytesLag = log.localOnlyLogSegmentsSize - log.activeSegment.size
                 val (topic, partition) = (tpId.topicPartition().topic(), tpId.topicPartition().partition())
-                brokerTopicStats.tierLagStats(topic).setLag(partition, lag)
-
-                readOffsetOption = Some(endOffset)
-                //todo-tier-storage
-                log.updateRemoteIndexHighestOffset(endOffset)
-                info(s"Copied $fileName to remote storage with segment-id: ${rlsmAfterCreate.remoteLogSegmentId()}")
+                brokerTopicStats.tierLagStats(topic).setLag(partition, offsetLag, bytesLag)
               }
             }
           } else {
