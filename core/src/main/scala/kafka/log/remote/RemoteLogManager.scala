@@ -620,16 +620,24 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           })
       }
 
-      def totalLogSize(log: Log): Long = {
-        def computeRemoteLogSize(): Long = {
+      def computeTotalLogSizeAndPublishMetrics(log: Log): Long = {
+        def computeRemoteLogSize(): RemoteLogAggregateStats = {
           val validLeaderEpochs = fromLeaderEpochCacheToEpochs(log)
 
           remoteLogMetadataManager.listRemoteLogSegments(tpId).asScala
             .filter(doesRemoteSegmentHaveGoodLineage(validLeaderEpochs, _, log.logEndOffset))
-            .map(_.segmentSizeInBytes()).sum
+            .map(segment => RemoteLogAggregateStats(segment.segmentSizeInBytes(), 1))
+            .reduceOption((a, b) => a.add(b))
+            .getOrElse(RemoteLogAggregateStats(0, 0))
         }
 
-        lazyRemoteLogSize.getOrCompute(computeRemoteLogSize) + log.localOnlyLogSegmentsSize
+        lazyRemoteLogSize.getOrCompute(computeRemoteLogSize) match {
+          case RemoteLogAggregateStats(remoteLogSizeBytes, numMetadataSegments) =>
+            brokerTopicStats.tierLagStats(tpId.topicPartition().topic())
+              .setRemoteLogAggregateData(tpId.topicPartition().partition(), remoteLogSizeBytes, numMetadataSegments)
+
+            remoteLogSizeBytes + log.localOnlyLogSegmentsSize
+        }
       }
 
       def fromLeaderEpochCacheToEpochs(log: Log): util.TreeMap[Integer, lang.Long] = {
@@ -643,8 +651,9 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           val (checkTimestampRetention, cleanupTs) = (retentionMs > -1, time.milliseconds() - retentionMs)
 
           val shouldDeleteBySize = log.config.retentionSize > -1
+          val totalLogSize = computeTotalLogSizeAndPublishMetrics(log)
           var remainingSize =
-            if (shouldDeleteBySize) totalLogSize(log) - log.config.retentionSize
+            if (shouldDeleteBySize) totalLogSize - log.config.retentionSize
             else 0
 
           var logStartOffset: Option[Long] = None

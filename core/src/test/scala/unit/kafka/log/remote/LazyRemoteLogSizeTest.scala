@@ -37,26 +37,26 @@ class LazyRemoteLogSizeTest {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
       numComputes += 1
-      0L
+      RemoteLogAggregateStats(0, 0)
     }
 
     val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
 
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     lazyRemoteLogSize.clear()
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(2, numComputes)
 
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(2, numComputes)
   }
 
@@ -65,32 +65,32 @@ class LazyRemoteLogSizeTest {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
       numComputes += 1
-      0L
+      RemoteLogAggregateStats(0, 0)
     }
 
     val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
 
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     // Does not recompute immediately
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     // Does not recompute before the specified time
     time.sleep(Duration.ofHours(12).toMillis)
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     // Recomputes after long enough
     time.sleep(Duration.ofHours(12).toMillis)
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(2, numComputes)
 
     time.sleep(Duration.ofHours(25).toMillis)
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(3, numComputes)
   }
 
@@ -99,27 +99,37 @@ class LazyRemoteLogSizeTest {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
       numComputes += 1
-      0L
+      RemoteLogAggregateStats(0, 0)
     }
 
     val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
 
     assertEquals(0, numComputes)
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
     lazyRemoteLogSize.add(2)
-    assertEquals(2, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
-    lazyRemoteLogSize.subtract(1)
-    assertEquals(1, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
-    lazyRemoteLogSize.add(4)
-    assertEquals(5, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(2, 1), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    lazyRemoteLogSize.subtract(2)
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    lazyRemoteLogSize.add(5)
+    assertEquals(RemoteLogAggregateStats(5, 1), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
 
+    // Subtract more than the existing size, so the original size was invalid and we recompute
     lazyRemoteLogSize.subtract(7)
-    // This will recompute since we subtracted more than the existing, so the original size was invalid
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(2, numComputes)
+
+    // Subtract more than the existing number of segments, so the original segment count was invalid and we recompute
+    lazyRemoteLogSize.add(2)
+    lazyRemoteLogSize.subtract(1)
+    assertEquals(RemoteLogAggregateStats(1, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(2, numComputes)
+
+    lazyRemoteLogSize.subtract(1)
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(3, numComputes)
   }
 
   @Test
@@ -127,7 +137,7 @@ class LazyRemoteLogSizeTest {
     var numComputes = 0
     val computeRemoteLogSizeWithCount = () => {
       numComputes += 1
-      0L
+      RemoteLogAggregateStats(0, 0)
     }
 
     val lazyRemoteLogSize = new LazyRemoteLogSize(brokerId, topicIdPartition, time)
@@ -140,7 +150,7 @@ class LazyRemoteLogSizeTest {
     assertEquals(0, numComputes)
 
     // Test that the value is computed
-    assertEquals(0, lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
+    assertEquals(RemoteLogAggregateStats(0, 0), lazyRemoteLogSize.getOrCompute(computeRemoteLogSizeWithCount))
     assertEquals(1, numComputes)
   }
 }

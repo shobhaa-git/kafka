@@ -23,33 +23,51 @@ import org.apache.kafka.common.utils.Time
 import java.time.Duration
 import scala.util.Random
 
+/**
+ * This class gives us aggregate information about the remote log. We avoid calling it metadata since the name is
+ * heavily overloaded
+ */
+private[remote] case class RemoteLogAggregateStats(remoteLogSizeBytes: Long, numMetadataSegments: Long) {
+  def add(addedSegmentBytes: Long): RemoteLogAggregateStats = add(RemoteLogAggregateStats(addedSegmentBytes, 1))
+
+  def add(other: RemoteLogAggregateStats): RemoteLogAggregateStats =
+    RemoteLogAggregateStats(this.remoteLogSizeBytes + other.remoteLogSizeBytes,
+      this.numMetadataSegments + other.numMetadataSegments)
+
+  def subtract(removedSegmentBytes: Long): Option[RemoteLogAggregateStats] = {
+    if (remoteLogSizeBytes < removedSegmentBytes || numMetadataSegments < 1) {
+      None
+    } else Some(RemoteLogAggregateStats(remoteLogSizeBytes - removedSegmentBytes, numMetadataSegments - 1))
+  }
+}
+
 private[remote] class LazyRemoteLogSize(brokerId: Int, tpId: TopicIdPartition, time: Time) extends Logging {
   this.logIdent = s"[RemoteLogManager=$brokerId partition=$tpId]"
   /**
-   * We maintain a cache of the total remote log size and incrementally update it to avoid having to recompute it
+   * We maintain a cache of the total remote log aggregate stats and incrementally update it to avoid having to recompute it
    * each time
    */
-  private var _remoteLogSizeOption: Option[Long] = None
+  private var _remoteLogAggregateStats: Option[RemoteLogAggregateStats] = None
   private var lastRefreshMillis: Long = -1
 
   def clear(): Unit = {
     this.synchronized {
-      _remoteLogSizeOption = None
+      _remoteLogAggregateStats = None
     }
   }
 
-  def getOrCompute(computeRemoteLogSize: () => Long): Long = {
+  def getOrCompute(computeRemoteLogSize: () => RemoteLogAggregateStats): RemoteLogAggregateStats = {
     this.synchronized {
-      if (_remoteLogSizeOption.isEmpty || shouldRefresh()) {
-        val originalRemoteLogSize = _remoteLogSizeOption
+      if (_remoteLogAggregateStats.isEmpty || shouldRefresh()) {
+        val originalRemoteLogSize = _remoteLogAggregateStats
 
-        _remoteLogSizeOption = Some(computeRemoteLogSize())
+        _remoteLogAggregateStats = Some(computeRemoteLogSize())
         lastRefreshMillis = time.milliseconds()
 
-        info(s"Recomputed remote log size as ${_remoteLogSizeOption}, was previously $originalRemoteLogSize")
+        info(s"Recomputed remote log size as ${_remoteLogAggregateStats}, was previously $originalRemoteLogSize")
       }
 
-      _remoteLogSizeOption.get
+      _remoteLogAggregateStats.get
     }
   }
 
@@ -68,20 +86,13 @@ private[remote] class LazyRemoteLogSize(brokerId: Int, tpId: TopicIdPartition, t
 
   def add(uploadedSegmentSizeInBytes: Long): Unit = {
     this.synchronized {
-      _remoteLogSizeOption = _remoteLogSizeOption.map(_ + uploadedSegmentSizeInBytes)
+      _remoteLogAggregateStats = _remoteLogAggregateStats.map(_.add(uploadedSegmentSizeInBytes))
     }
   }
 
   def subtract(deletedSegmentSizeInBytes: Long): Unit = {
     this.synchronized {
-      _remoteLogSizeOption = _remoteLogSizeOption match {
-        case Some(currentSize) if currentSize < deletedSegmentSizeInBytes =>
-          warn(s"Segment size to delete $deletedSegmentSizeInBytes is larger than current remote log size $currentSize. " +
-            s"Computed size of log is wrong")
-          None
-        case Some(currentSize) => Some(currentSize - deletedSegmentSizeInBytes)
-        case None => None
-      }
+      _remoteLogAggregateStats = _remoteLogAggregateStats.flatMap(_.subtract(deletedSegmentSizeInBytes))
     }
   }
 }

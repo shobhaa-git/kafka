@@ -17,62 +17,107 @@
 
 package unit.kafka.server
 
-import kafka.server.BrokerTopicStats
+import kafka.server.{BrokerTopicStats, BrokerTopicTierLagMetrics}
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
-class BrokerTopicTierLagMetricsTest {
+/**
+ * We test the main logic in singleMetric_* tests and sanity check the allMetrics_* logic.
+ */
+class BrokerTopicPartitionAggregatedMetricsTest {
+  val brokerTopicPartitionAggregatedMetrics = new BrokerTopicTierLagMetrics("topic")
+
+  def aPartitionAggregatedMetric(): brokerTopicPartitionAggregatedMetrics.BrokerTopicTierLagMetric =
+    new brokerTopicPartitionAggregatedMetrics.BrokerTopicTierLagMetric("testMetric")
+
   @Test
-  def defaultTierLagIsZero(): Unit = {
-    assertEquals(0L, new BrokerTopicStats().tierLagStats("topic").offsetLag())
-    assertEquals(0L, new BrokerTopicStats().tierLagStats("topic").bytesLag())
+  def singleMetric_defaultValueIsZero(): Unit = {
+    assertEquals(0L, aPartitionAggregatedMetric().lag())
   }
 
   @Test
-  def partitionLagsAreCumulated(): Unit = {
-    val tierLagStats = new BrokerTopicStats().tierLagStats("topic")
-    tierLagStats.setLag(0, 3, 10)
-    tierLagStats.setLag(2, 5, 11)
+  def singleMetric_partitionValuesAreCumulated(): Unit = {
+    val partitionAggregatedMetric = aPartitionAggregatedMetric()
+    partitionAggregatedMetric.setLag(0, 3)
+    partitionAggregatedMetric.setLag(2, 5)
 
-    assertEquals(8L, tierLagStats.offsetLag())
-    assertEquals(21L, tierLagStats.bytesLag())
+    assertEquals(8L, partitionAggregatedMetric.lag())
   }
 
   @Test
-  def partitionLagsCanBeUpdated(): Unit = {
-    val tierLagStats = new BrokerTopicStats().tierLagStats("topic")
-    tierLagStats.setLag(0, 3, 10)
-    tierLagStats.setLag(2, 5, 11)
+  def singleMetric_partitionValuesCanBeUpdated(): Unit = {
+    val partitionAggregatedMetric = aPartitionAggregatedMetric()
+    partitionAggregatedMetric.setLag(0, 3)
+    partitionAggregatedMetric.setLag(2, 5)
 
-    assertEquals(8L, tierLagStats.offsetLag())
-    assertEquals(21L, tierLagStats.bytesLag())
+    assertEquals(8L, partitionAggregatedMetric.lag())
 
-    tierLagStats.setLag(2, 1, 2)
-    assertEquals(4L, tierLagStats.offsetLag())
-    assertEquals(12L, tierLagStats.bytesLag())
+    partitionAggregatedMetric.setLag(2, 1)
+    assertEquals(4L, partitionAggregatedMetric.lag())
 
-
-    tierLagStats.setLag(1, 1, 1)
-    assertEquals(5L, tierLagStats.offsetLag())
-    assertEquals(13L, tierLagStats.bytesLag())
+    partitionAggregatedMetric.setLag(1, 1)
+    assertEquals(5L, partitionAggregatedMetric.lag())
   }
 
   @Test
-  def partitionsCanBeRemovedFromLag(): Unit = {
-    val tierLagStats = new BrokerTopicStats().tierLagStats("topic")
-    tierLagStats.setLag(0, 3, 10)
-    tierLagStats.setLag(2, 5, 11)
+  def singleMetric_partitionsCanBeRemoved(): Unit = {
+    val partitionAggregatedMetric = aPartitionAggregatedMetric()
+    partitionAggregatedMetric.setLag(0, 3)
+    partitionAggregatedMetric.setLag(2, 5)
 
-    tierLagStats.removePartition(0)
-    assertEquals(5L, tierLagStats.offsetLag())
-    assertEquals(11L, tierLagStats.bytesLag())
+    partitionAggregatedMetric.removePartition(0)
+    assertEquals(5L, partitionAggregatedMetric.lag())
 
-    tierLagStats.removePartition(2)
-    assertEquals(0L, tierLagStats.offsetLag())
-    assertEquals(0L, tierLagStats.bytesLag())
+    partitionAggregatedMetric.removePartition(2)
+    assertEquals(0L, partitionAggregatedMetric.lag())
 
-    tierLagStats.removePartition(3)
-    assertEquals(0L, tierLagStats.offsetLag())
-    assertEquals(0L, tierLagStats.bytesLag())
+    partitionAggregatedMetric.removePartition(3)
+    assertEquals(0L, partitionAggregatedMetric.lag())
+  }
+
+  @Test
+  def allMetrics_defaultValuesAreZero(): Unit = {
+    val brokerTopicPartitionAggregatedMetrics = new BrokerTopicStats().tierLagStats("topic")
+
+    assertEquals(0L, brokerTopicPartitionAggregatedMetrics.offsetLag())
+    assertEquals(0L, brokerTopicPartitionAggregatedMetrics.bytesLag())
+    assertEquals(0L, brokerTopicPartitionAggregatedMetrics.remoteLogSize())
+    assertEquals(0L, brokerTopicPartitionAggregatedMetrics.remoteLogMetadataCount())
+  }
+
+  @Test
+  def allMetrics_setPartitionLag(): Unit = {
+    val brokerTopicPartitionAggregatedMetrics = new BrokerTopicStats().tierLagStats("topic")
+    brokerTopicPartitionAggregatedMetrics.setLag(0, 3, 10)
+    brokerTopicPartitionAggregatedMetrics.setLag(2, 5, 11)
+
+    assertEquals(8L, brokerTopicPartitionAggregatedMetrics.offsetLag())
+    assertEquals(21L, brokerTopicPartitionAggregatedMetrics.bytesLag())
+
+    brokerTopicPartitionAggregatedMetrics.setLag(2, 1, 2)
+    assertEquals(4L, brokerTopicPartitionAggregatedMetrics.offsetLag())
+    assertEquals(12L, brokerTopicPartitionAggregatedMetrics.bytesLag())
+
+    brokerTopicPartitionAggregatedMetrics.removePartition(2)
+    assertEquals(3L, brokerTopicPartitionAggregatedMetrics.offsetLag())
+    assertEquals(10L, brokerTopicPartitionAggregatedMetrics.bytesLag())
+  }
+
+  @Test
+  def allMetrics_setRemoteLogAggregateData(): Unit = {
+    val brokerTopicPartitionAggregatedMetrics = new BrokerTopicStats().tierLagStats("topic")
+    brokerTopicPartitionAggregatedMetrics.setRemoteLogAggregateData(0, 3, 10)
+    brokerTopicPartitionAggregatedMetrics.setRemoteLogAggregateData(2, 5, 11)
+
+    assertEquals(8L, brokerTopicPartitionAggregatedMetrics.remoteLogSize())
+    assertEquals(21L, brokerTopicPartitionAggregatedMetrics.remoteLogMetadataCount())
+
+    brokerTopicPartitionAggregatedMetrics.setRemoteLogAggregateData(2, 1, 2)
+    assertEquals(4L, brokerTopicPartitionAggregatedMetrics.remoteLogSize())
+    assertEquals(12L, brokerTopicPartitionAggregatedMetrics.remoteLogMetadataCount())
+
+    brokerTopicPartitionAggregatedMetrics.removePartition(2)
+    assertEquals(3L, brokerTopicPartitionAggregatedMetrics.remoteLogSize())
+    assertEquals(10L, brokerTopicPartitionAggregatedMetrics.remoteLogMetadataCount())
   }
 }

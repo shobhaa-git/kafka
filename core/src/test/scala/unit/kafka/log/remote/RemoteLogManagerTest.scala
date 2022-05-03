@@ -575,6 +575,7 @@ class RemoteLogManagerTest {
     val segmentMetadataList = listRemoteLogSegmentMetadataByTime(segmentCount, deletableSegmentCount, recordsPerSegment)
     expect(rlmmManager.highestOffsetForEpoch(EasyMock.eq(topicIdPartition), anyInt()))
       .andReturn(Optional.empty()).anyTimes()
+    expect(rlmmManager.listRemoteLogSegments(topicIdPartition)).andReturn(segmentMetadataList.iterator.asJava).once()
     expect(rlmmManager.listRemoteLogSegments(EasyMock.eq(topicIdPartition), anyInt())).andAnswer(() => {
       val leaderEpoch = getCurrentArgument[Int](1)
       if (leaderEpoch == 0)
@@ -602,6 +603,11 @@ class RemoteLogManagerTest {
       assertEquals(expectedEndMetadata.endOffset()+1, logStartOffset.get)
     }
     verify(logConfig, log, rlmmManager, rsmManager)
+
+    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
+    assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
 
   @ParameterizedTest(name = "testDeleteLogSegmentDueToRetentionSizeBreach segmentCount={0} deletableSegmentCount={1}")
@@ -666,6 +672,11 @@ class RemoteLogManagerTest {
       assertEquals(expectedEndMetadata.endOffset()+1, logStartOffset.get)
     }
     verify(logConfig, log, rlmmManager, rsmManager)
+
+    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
+    assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
   
   @ParameterizedTest(name = "testDeleteLogSegmentDueToRetentionTimeAndSizeBreach segmentCount={0} deletableSegmentCountByTime={1} deletableSegmentCountBySize={2}")
@@ -735,6 +746,11 @@ class RemoteLogManagerTest {
       assertEquals(expectedEndMetadata.endOffset()+1, logStartOffset.get)
     }
     verify(logConfig, log, rlmmManager, rsmManager)
+
+    val remoteLogSizeMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogSize()
+    val remoteLogMetadataCountMetricValue = brokerTopicStats.tierLagStats(topicIdPartition.topicPartition().topic()).remoteLogMetadataCount()
+    assertEquals(segmentCount * recordsPerSegment * 1, remoteLogSizeMetricValue)
+    assertEquals(segmentCount, remoteLogMetadataCountMetricValue)
   }
 
   @Test
