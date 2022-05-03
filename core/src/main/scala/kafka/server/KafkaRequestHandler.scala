@@ -341,6 +341,9 @@ class BrokerTopicAggregatedMetrics[T](topicName: Option[String]) extends KafkaMe
 
   def close(): Unit = metricTypeMap.values.foreach(_.close())
 
+  // used for testing only
+  def metricMap: Map[String, BrokerTopicAggregatedMetric] = metricTypeMap.toMap
+
   /**
    * Partition-aggregated metric calculator
    */

@@ -84,7 +84,8 @@ class AbstractFetcherThreadTest {
 
     fetcher.start()
 
-    val brokerTopicStatsMetrics = fetcher.brokerTopicStats.allTopicsStats.metricMap.keySet
+    val brokerTopicStatsMetrics = fetcher.brokerTopicStats.allTopicsStats.metricMap.keySet ++
+      fetcher.brokerTopicStats.allTopicAggregatedStats.metricMap.keySet
     val fetcherMetrics = Set(FetcherMetrics.BytesPerSec, FetcherMetrics.RequestsPerSec, FetcherMetrics.ConsumerLag)
 
     // wait until all fetcher metrics are present
