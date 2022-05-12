@@ -317,14 +317,8 @@ class RemoteLogManager(fetchLog: TopicPartition => Option[Log],
           info(s"Cancelling the RLM task for tp: $topicPartition")
           task.cancel()
         }
-        if (delete) {
-          info(s"Deleting the remote log segments for partition: $tpId")
-          remoteLogMetadataManager.listRemoteLogSegments(tpId).forEachRemaining(elt => deleteRemoteLogSegment(elt, _ => true))
-        }
-
         brokerTopicStats.topicAggregatedStats(topicPartition.topic()).remove(topicPartition.partition())
         brokerTopicStats.allTopicAggregatedStats.remove(topicPartition.topic())
-
       } catch {
         case ex: Throwable => errorHandler(topicPartition, ex)
       }
