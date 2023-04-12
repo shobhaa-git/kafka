@@ -41,6 +41,8 @@
     <suppress checks="NPathComplexity" files="(ClusterTestExtensions|KafkaApisBuilder).java"/>
     <suppress checks="MethodLength"
               files="(KafkaClusterTestKit).java"/>
+    <suppress checks="ImportControl"
+              files="(ZkBrokerRegistrationTest|DelegatingRequest|InstrumentedRequestProcessor|InstrumentedZooKeeperServer|ReceiptEvent|MutedServerCxn).java"/>
 
     <!-- Clients -->
     <suppress id="dontUseSystemExit"
