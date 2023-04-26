@@ -33,7 +33,7 @@ import kafka.security.CredentialProvider
 import kafka.server.metadata.{ZkConfigRepository, ZkMetadataCache}
 import kafka.utils._
 import kafka.zk.{AdminZkClient, BrokerInfo, KafkaZkClient}
-import org.apache.kafka.clients.{ApiVersions, ManualMetadataUpdater, NetworkClient, NetworkClientUtils}
+import org.apache.kafka.clients.{ApiVersions, CommonClientConfigs, ManualMetadataUpdater, NetworkClient, NetworkClientUtils}
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.message.ControlledShutdownRequestData
@@ -53,7 +53,7 @@ import org.apache.kafka.server.common.MetadataVersion._
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 import org.apache.zookeeper.client.ZKClientConfig
 
-import java.util.Collections
+import java.util
 import scala.collection.{Map, Seq}
 import scala.jdk.CollectionConverters._
 
@@ -250,7 +250,7 @@ class KafkaServer(
 
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
-        new LinuxBrokerLogDirHealthMonitor().configure(Collections.emptyMap());
+        val brokerLogDirHealthMonitor = new LinuxBrokerLogDirHealthMonitor()
 
         /* start log manager */
         _logManager = LogManager(
@@ -454,6 +454,12 @@ class KafkaServer(
         // Create the config manager. start listening to notifications
         dynamicConfigManager = new ZkConfigManager(zkClient, dynamicConfigHandlers)
         dynamicConfigManager.startup()
+
+
+
+        val props = new util.HashMap[String, Any]
+        props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+        brokerLogDirHealthMonitor.configure(props)
 
         socketServer.enableRequestProcessing(authorizerFutures)
 

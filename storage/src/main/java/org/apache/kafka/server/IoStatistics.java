@@ -16,11 +16,24 @@
  */
 package org.apache.kafka.server;
 
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 
+import static java.nio.charset.Charset.defaultCharset;
+import static org.apache.kafka.server.LinuxBrokerLogDirHealthMonitor.IOSTATS_TOPIC_NAME;
+
 public abstract class IoStatistics {
+    private static final Logger log = LoggerFactory.getLogger(IoStatistics.class);
+
     public static IoStatistics newIoStatistics(Instant time, String stat) {
         String[] stats = Arrays.stream(stat.split("\\D+"))
             .filter(s -> !s.isEmpty())
@@ -42,7 +55,7 @@ public abstract class IoStatistics {
     protected final long writeTime;
     protected final long queueTime;
 
-    private static final class Snapshot extends IoStatistics {
+    private static final class Snapshot extends IoStatistics implements Serializable {
         private final Instant time;
 
         private Snapshot(Instant time, long readsCompleted, long readTime, long writesCompleted, long writeTime, long queueTime) {
@@ -61,6 +74,21 @@ public abstract class IoStatistics {
         @Override
         public double ioQueueSize() {
             throw new IllegalStateException("I/O queue size cannot be defined for an IoStatistics snapshot.");
+        }
+
+        @Override
+        public ProducerRecord<Long, byte[]> toProducerRecord() {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+            try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+                oos.writeObject(this);
+                oos.flush();
+                return new ProducerRecord<>(IOSTATS_TOPIC_NAME, time.toEpochMilli(), baos.toByteArray());
+
+            } catch (IOException e) {
+                log.error("Error generating record from IoStatistics", e);
+                return new ProducerRecord<>(IOSTATS_TOPIC_NAME, time.toEpochMilli(), "<ERROR>".getBytes(defaultCharset()));
+            }
         }
     }
 
@@ -88,6 +116,11 @@ public abstract class IoStatistics {
         public double ioQueueSize() {
             return (double) queueTime / timeSpan.toMillis();
         }
+
+        @Override
+        public ProducerRecord<Long, byte[]> toProducerRecord() {
+            throw new IllegalStateException("Delta Statistics are not authorized to be converted to records.");
+        }
     }
 
     protected IoStatistics(long readsCompleted, long readTime, long writesCompleted, long writeTime, long queueTime) {
@@ -101,6 +134,8 @@ public abstract class IoStatistics {
     public abstract IoStatistics delta(IoStatistics origin);
 
     public abstract double ioQueueSize();
+
+    public abstract ProducerRecord<Long, byte[]> toProducerRecord();
 
     public double readOpsLatency() {
         return (double) readTime / readsCompleted;

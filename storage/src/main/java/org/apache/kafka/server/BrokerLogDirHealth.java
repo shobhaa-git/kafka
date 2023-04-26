@@ -1,4 +1,4 @@
-package org.apache.kafka.server;/*
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -14,13 +14,16 @@ package org.apache.kafka.server;/*
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.kafka.server;
 
-import org.apache.kafka.common.Configurable;
+public enum BrokerLogDirHealth {
 
-import java.io.Closeable;
+    Healthy,
 
-public interface BrokerLogDirHealthMonitor extends Configurable, Closeable {
+    Slow,
 
-    void register(BrokerLogDirHealthChangeHandler handler);
+    Stuck,
+
+    Failed
 
 }
