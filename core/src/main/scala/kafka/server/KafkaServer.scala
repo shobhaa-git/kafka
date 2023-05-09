@@ -47,7 +47,7 @@ import org.apache.kafka.common.security.{JaasContext, JaasUtils}
 import org.apache.kafka.common.utils.{AppInfoParser, LogContext, Time, Utils}
 import org.apache.kafka.common.{Endpoint, Node}
 import org.apache.kafka.metadata.BrokerState
-import org.apache.kafka.server.LinuxBrokerLogDirHealthMonitor
+import org.apache.kafka.server.BrokerLogDirHealthMonitor
 import org.apache.kafka.server.authorizer.Authorizer
 import org.apache.kafka.server.common.MetadataVersion._
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
@@ -250,7 +250,8 @@ class KafkaServer(
 
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
-        val brokerLogDirHealthMonitor = new LinuxBrokerLogDirHealthMonitor()
+        val monitorClass = getClass.getClassLoader.loadClass("io.stats.plugin.LinuxBrokerLogDirHealthMonitor")
+        val brokerLogDirHealthMonitor = monitorClass.getConstructor(classOf[Int]).newInstance(config.brokerId).asInstanceOf[BrokerLogDirHealthMonitor]
 
         /* start log manager */
         _logManager = LogManager(
@@ -455,10 +456,11 @@ class KafkaServer(
         dynamicConfigManager = new ZkConfigManager(zkClient, dynamicConfigHandlers)
         dynamicConfigManager.startup()
 
-
+        brokerInfo.broker.endPoints.foreach(x => info(s"$x"))
 
         val props = new util.HashMap[String, Any]
-        props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+        val listener = brokerInfo.broker.endPoints.find(x => x.listenerName.value.equals("REPLICATION")).get
+        props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, s"${listener.host}:${listener.port}")
         brokerLogDirHealthMonitor.configure(props)
 
         socketServer.enableRequestProcessing(authorizerFutures)
