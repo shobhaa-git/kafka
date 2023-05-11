@@ -73,6 +73,7 @@ class IsrExpirationTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(configs.head.brokerId, configs.head.interBrokerProtocolVersion),
       logDirFailureChannel = new LogDirFailureChannel(configs.head.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterIsrManager)
   }
 

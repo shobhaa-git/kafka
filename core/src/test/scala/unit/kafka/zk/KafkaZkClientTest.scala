@@ -452,18 +452,18 @@ class KafkaZkClientTest extends QuorumTestHarness {
 
     val brokerId = 3
 
-    zkClient.propagateLogDirEvent(brokerId)
+    zkClient.propagateLogDirEvent(brokerId, false)
     var expectedPath = "/log_dir_event_notification/log_dir_event_0000000000"
     assertTrue(zkClient.pathExists(expectedPath))
     assertEquals(Some("""{"version":1,"broker":3,"event":1}"""), dataAsString(expectedPath))
 
-    zkClient.propagateLogDirEvent(brokerId)
+    zkClient.propagateLogDirEvent(brokerId, false)
     expectedPath = "/log_dir_event_notification/log_dir_event_0000000001"
     assertTrue(zkClient.pathExists(expectedPath))
     assertEquals(Some("""{"version":1,"broker":3,"event":1}"""), dataAsString(expectedPath))
 
     val anotherBrokerId = 4
-    zkClient.propagateLogDirEvent(anotherBrokerId)
+    zkClient.propagateLogDirEvent(anotherBrokerId, false)
     expectedPath = "/log_dir_event_notification/log_dir_event_0000000002"
     assertTrue(zkClient.pathExists(expectedPath))
     assertEquals(Some("""{"version":1,"broker":4,"event":1}"""), dataAsString(expectedPath))
@@ -479,14 +479,14 @@ class KafkaZkClientTest extends QuorumTestHarness {
     zkClient.createRecursive("/log_dir_event_notification")
 
     val brokerId = 3
-    zkClient.propagateLogDirEvent(brokerId)
+    zkClient.propagateLogDirEvent(brokerId, false)
 
     assertEquals(Seq(3), zkClient.getBrokerIdsFromLogDirEvents(Seq("0000000000")))
 
-    zkClient.propagateLogDirEvent(brokerId)
+    zkClient.propagateLogDirEvent(brokerId, false)
 
     val anotherBrokerId = 4
-    zkClient.propagateLogDirEvent(anotherBrokerId)
+    zkClient.propagateLogDirEvent(anotherBrokerId, false)
 
     val notifications012 = Seq("0000000000", "0000000001", "0000000002")
     assertEquals(notifications012.toSet, zkClient.getAllLogDirEventNotifications.toSet)
@@ -503,9 +503,9 @@ class KafkaZkClientTest extends QuorumTestHarness {
     val brokerId = 3
     val anotherBrokerId = 4
 
-    zkClient.propagateLogDirEvent(brokerId)
-    zkClient.propagateLogDirEvent(brokerId)
-    zkClient.propagateLogDirEvent(anotherBrokerId)
+    zkClient.propagateLogDirEvent(brokerId, false)
+    zkClient.propagateLogDirEvent(brokerId, false)
+    zkClient.propagateLogDirEvent(anotherBrokerId, false)
 
     assertThrows(classOf[ControllerMovedException], () => zkClient.deleteLogDirEventNotifications(Seq("0000000000", "0000000002"), controllerEpochZkVersion + 1))
     assertEquals(Seq("0000000000", "0000000001", "0000000002"), zkClient.getAllLogDirEventNotifications)
@@ -514,7 +514,7 @@ class KafkaZkClientTest extends QuorumTestHarness {
 
     assertEquals(Seq("0000000001"), zkClient.getAllLogDirEventNotifications)
 
-    zkClient.propagateLogDirEvent(anotherBrokerId)
+    zkClient.propagateLogDirEvent(anotherBrokerId, false)
 
     zkClient.deleteLogDirEventNotifications(controllerEpochZkVersion)
     assertEquals(Seq.empty, zkClient.getAllLogDirEventNotifications)

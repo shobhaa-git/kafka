@@ -177,7 +177,7 @@ object HostedPartition {
   /**
    * This broker hosts the partition, but it is in an offline log directory.
    */
-  final object Offline extends HostedPartition
+  final case class Offline(partition: Partition) extends HostedPartition
 }
 
 object ReplicaManager {
@@ -192,6 +192,7 @@ class ReplicaManager(val config: KafkaConfig,
                      quotaManagers: QuotaManagers,
                      val metadataCache: MetadataCache,
                      logDirFailureChannel: LogDirFailureChannel,
+                     logDirHealthChangeChannel: LogDirHealthChangeChannel,
                      val alterPartitionManager: AlterPartitionManager,
                      val brokerTopicStats: BrokerTopicStats = new BrokerTopicStats(),
                      val isShuttingDown: AtomicBoolean = new AtomicBoolean(false),
@@ -238,6 +239,7 @@ class ReplicaManager(val config: KafkaConfig,
   protected val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
 
   private var logDirFailureHandler: LogDirFailureHandler = null
+  private var logDirHealthChangeHandler: LogDirHealthChangeHandler = null
 
   private class LogDirFailureHandler(name: String, haltBrokerOnDirFailure: Boolean) extends ShutdownableThread(name) {
     override def doWork(): Unit = {
@@ -247,6 +249,13 @@ class ReplicaManager(val config: KafkaConfig,
         Exit.halt(1)
       }
       handleLogDirFailure(newOfflineLogDir)
+    }
+  }
+
+  private class LogDirHealthChangeHandler extends ShutdownableThread("log-dir-health-change-handler") {
+    override def doWork(): Unit = {
+      val dir = logDirHealthChangeChannel.takeNext()
+      handleLogDirHealthy(dir)
     }
   }
 
@@ -314,12 +323,14 @@ class ReplicaManager(val config: KafkaConfig,
     val haltBrokerOnFailure = metadataCache.metadataVersion().isLessThan(IBP_1_0_IV0)
     logDirFailureHandler = new LogDirFailureHandler("LogDirFailureHandler", haltBrokerOnFailure)
     logDirFailureHandler.start()
+    logDirHealthChangeHandler = new LogDirHealthChangeHandler()
+    logDirHealthChangeHandler.start()
   }
 
   private def maybeRemoveTopicMetrics(topic: String): Unit = {
     val topicHasNonOfflinePartition = allPartitions.values.exists {
       case online: HostedPartition.Online => topic == online.partition.topic
-      case HostedPartition.None | HostedPartition.Offline => false
+      case HostedPartition.None | HostedPartition.Offline(_) => false
     }
     if (!topicHasNonOfflinePartition) // nothing online or deferred
       brokerTopicStats.removeMetrics(topic)
@@ -370,7 +381,7 @@ class ReplicaManager(val config: KafkaConfig,
           val deletePartition = partitionState.deletePartition()
 
           getPartition(topicPartition) match {
-            case HostedPartition.Offline =>
+            case HostedPartition.Offline(_) =>
               stateChangeLogger.warn(s"Ignoring StopReplica request (delete=$deletePartition) from " +
                 s"controller $controllerId with correlation id $correlationId " +
                 s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
@@ -516,7 +527,7 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   private def offlinePartitionCount: Int = {
-    allPartitions.values.iterator.count(_ == HostedPartition.Offline)
+    allPartitions.values.iterator.count(_.isInstanceOf[HostedPartition.Offline])
   }
 
   def getPartitionOrException(topicPartition: TopicPartition): Partition = {
@@ -536,7 +547,7 @@ class ReplicaManager(val config: KafkaConfig,
       case HostedPartition.Online(partition) =>
         Right(partition)
 
-      case HostedPartition.Offline =>
+      case HostedPartition.Offline(_) =>
         Left(Errors.KAFKA_STORAGE_ERROR)
 
       case HostedPartition.None if metadataCache.contains(topicPartition) =>
@@ -736,7 +747,7 @@ class ReplicaManager(val config: KafkaConfig,
                 replicaAlterLogDirsManager.removeFetcherForPartitions(Set(topicPartition))
                 partition.removeFutureLocalReplica()
               }
-            case HostedPartition.Offline =>
+            case HostedPartition.Offline(_) =>
               throw new KafkaStorageException(s"Partition $topicPartition is offline")
 
             case HostedPartition.None => // Do nothing
@@ -1352,7 +1363,7 @@ class ReplicaManager(val config: KafkaConfig,
           requestPartitionStates.foreach { partitionState =>
             val topicPartition = new TopicPartition(partitionState.topicName, partitionState.partitionIndex)
             val partitionOpt = getPartition(topicPartition) match {
-              case HostedPartition.Offline =>
+              case HostedPartition.Offline(_) =>
                 stateChangeLogger.warn(s"Ignoring LeaderAndIsr request from " +
                   s"controller $controllerId with correlation id $correlationId " +
                   s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
@@ -1615,7 +1626,7 @@ class ReplicaManager(val config: KafkaConfig,
             // to `ReplicaManager.allPartitions` before `createLogIfNotExists()` failed to create local replica due
             // to KafkaStorageException. In this case `ReplicaManager.allPartitions` will map this topic-partition
             // to an empty Partition object. We need to map this topic-partition to OfflinePartition instead.
-            markPartitionOffline(partition.topicPartition)
+            markPartitionOffline(partition)
             responseMap.put(partition.topicPartition, Errors.KAFKA_STORAGE_ERROR)
         }
       }
@@ -1705,7 +1716,7 @@ class ReplicaManager(val config: KafkaConfig,
             // to `ReplicaManager.allPartitions` before `createLogIfNotExists()` failed to create local replica due
             // to KafkaStorageException. In this case `ReplicaManager.allPartitions` will map this topic-partition
             // to an empty Partition object. We need to map this topic-partition to OfflinePartition instead.
-            markPartitionOffline(partition.topicPartition)
+            markPartitionOffline(partition)
             responseMap.put(partition.topicPartition, Errors.KAFKA_STORAGE_ERROR)
         }
       }
@@ -1848,9 +1859,9 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
-  def markPartitionOffline(tp: TopicPartition): Unit = replicaStateChangeLock synchronized {
-    allPartitions.put(tp, HostedPartition.Offline)
-    Partition.removeMetrics(tp)
+  def markPartitionOffline(partition: Partition): Unit = replicaStateChangeLock synchronized {
+    allPartitions.put(partition.topicPartition, HostedPartition.Offline(partition))
+    Partition.removeMetrics(partition.topicPartition)
   }
 
   /**
@@ -1866,14 +1877,14 @@ class ReplicaManager(val config: KafkaConfig,
     replicaStateChangeLock synchronized {
       val newOfflinePartitions = onlinePartitionsIterator.filter { partition =>
         partition.log.exists { _.parentDir == dir }
-      }.map(_.topicPartition).toSet
+      }.toSet
 
       val partitionsWithOfflineFutureReplica = onlinePartitionsIterator.filter { partition =>
         partition.futureLog.exists { _.parentDir == dir }
       }.toSet
 
-      replicaFetcherManager.removeFetcherForPartitions(newOfflinePartitions)
-      replicaAlterLogDirsManager.removeFetcherForPartitions(newOfflinePartitions ++ partitionsWithOfflineFutureReplica.map(_.topicPartition))
+      replicaFetcherManager.removeFetcherForPartitions(newOfflinePartitions.map(_.topicPartition))
+      replicaAlterLogDirsManager.removeFetcherForPartitions(newOfflinePartitions.map(_.topicPartition) ++ partitionsWithOfflineFutureReplica.map(_.topicPartition))
 
       partitionsWithOfflineFutureReplica.foreach(partition => partition.removeFutureLocalReplica(deleteFromLogDir = false))
       newOfflinePartitions.foreach { topicPartition =>
@@ -1893,9 +1904,17 @@ class ReplicaManager(val config: KafkaConfig,
       if (zkClient.isEmpty) {
         warn("Unable to propagate log dir failure via Zookeeper in KRaft mode")
       } else {
-        zkClient.get.propagateLogDirEvent(localBrokerId)
+        zkClient.get.propagateLogDirEvent(localBrokerId, false)
       }
     warn(s"Stopped serving replicas in dir $dir")
+  }
+
+  def handleLogDirHealthy(dir: String): Unit = {
+    replicaStateChangeLock synchronized {
+
+    }
+
+    zkClient.get.propagateLogDirEvent(config.brokerId, true)
   }
 
   def removeMetrics(): Unit = {
@@ -1919,6 +1938,8 @@ class ReplicaManager(val config: KafkaConfig,
     removeMetrics()
     if (logDirFailureHandler != null)
       logDirFailureHandler.shutdown()
+    if (logDirHealthChangeHandler != null)
+      logDirHealthChangeHandler.shutdown()
     replicaFetcherManager.shutdown()
     replicaAlterLogDirsManager.shutdown()
     delayedFetchPurgatory.shutdown()
@@ -1966,7 +1987,7 @@ class ReplicaManager(val config: KafkaConfig,
               offsetForLeaderPartition.leaderEpoch,
               fetchOnlyFromLeader = true)
 
-          case HostedPartition.Offline =>
+          case HostedPartition.Offline(_) =>
             new EpochEndOffset()
               .setPartition(offsetForLeaderPartition.partition)
               .setErrorCode(Errors.KAFKA_STORAGE_ERROR.code)
@@ -2043,7 +2064,7 @@ class ReplicaManager(val config: KafkaConfig,
                                           delta: TopicsDelta,
                                           topicId: Uuid): Option[(Partition, Boolean)] = {
     getPartition(tp) match {
-      case HostedPartition.Offline =>
+      case HostedPartition.Offline(_) =>
         stateChangeLogger.warn(s"Unable to bring up new local leader $tp " +
           s"with topic id $topicId because it resides in an offline log " +
           "directory.")
@@ -2142,7 +2163,7 @@ class ReplicaManager(val config: KafkaConfig,
             // `getOrCreatePartition()` before `createLogIfNotExists()` failed to create local replica due
             // to KafkaStorageException. In this case `ReplicaManager.allPartitions` will map this topic-partition
             // to an empty Partition object. We need to map this topic-partition to OfflinePartition instead.
-            markPartitionOffline(tp)
+            markPartitionOffline(partition)
         }
       }
     }
@@ -2193,7 +2214,7 @@ class ReplicaManager(val config: KafkaConfig,
             // `getOrCreatePartition()` before `createLogIfNotExists()` failed to create local replica due
             // to KafkaStorageException. In this case `ReplicaManager.allPartitions` will map this topic-partition
             // to an empty Partition object. We need to map this topic-partition to OfflinePartition instead.
-            markPartitionOffline(tp)
+            markPartitionOffline(partition)
 
           case e: Throwable =>
             stateChangeLogger.error(s"Unable to start fetching $tp " +

@@ -1244,7 +1244,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     createResponse.maybeThrow()
   }
 
-  def propagateLogDirEvent(brokerId: Int): Unit = {
+  def propagateLogDirEvent(brokerId: Int, healthy: Boolean): Unit = {
     val logDirEventNotificationPath: String = createSequentialPersistentPath(
       LogDirEventNotificationZNode.path + "/" + LogDirEventNotificationSequenceZNode.SequenceNumberPrefix,
       LogDirEventNotificationSequenceZNode.encode(brokerId))

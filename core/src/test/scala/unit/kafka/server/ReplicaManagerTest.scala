@@ -118,6 +118,7 @@ class ReplicaManagerTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(config.brokerId, config.interBrokerProtocolVersion),
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager)
     try {
       val partition = rm.createPartition(new TopicPartition(topic, 1))
@@ -145,6 +146,7 @@ class ReplicaManagerTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(config.brokerId, config.interBrokerProtocolVersion),
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager)
     try {
       val partition = rm.createPartition(new TopicPartition(topic, 1))
@@ -169,6 +171,7 @@ class ReplicaManagerTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(config.brokerId, config.interBrokerProtocolVersion),
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager,
       threadNamePrefix = Option(this.getClass.getName))
     try {
@@ -225,6 +228,7 @@ class ReplicaManagerTest {
       quotaManagers = quotaManager,
       metadataCache = metadataCache,
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = new LogDirHealthChangeChannel(null, 0),
       alterPartitionManager = alterPartitionManager)
 
     try {
@@ -2061,6 +2065,7 @@ class ReplicaManagerTest {
       brokerTopicStats = mockBrokerTopicStats,
       metadataCache = metadataCache,
       logDirFailureChannel = mockLogDirFailureChannel,
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager,
       delayedProducePurgatoryParam = Some(mockProducePurgatory),
       delayedFetchPurgatoryParam = Some(mockFetchPurgatory),
@@ -2326,6 +2331,7 @@ class ReplicaManagerTest {
       quotaManagers = quotaManager,
       metadataCache = metadataCache,
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager,
       isShuttingDown = isShuttingDown,
       delayedProducePurgatoryParam = Some(mockProducePurgatory),
@@ -2574,6 +2580,7 @@ class ReplicaManagerTest {
       brokerTopicStats = brokerTopicStats1,
       metadataCache = metadataCache0,
       logDirFailureChannel = new LogDirFailureChannel(config0.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager)
     val rm1 = new ReplicaManager(
       metrics = metrics,
@@ -2585,6 +2592,7 @@ class ReplicaManagerTest {
       brokerTopicStats = brokerTopicStats2,
       metadataCache = metadataCache1,
       logDirFailureChannel = new LogDirFailureChannel(config1.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterPartitionManager)
 
     (rm0, rm1)
@@ -2633,7 +2641,7 @@ class ReplicaManagerTest {
     ).build()
 
     replicaManager.becomeLeaderOrFollower(1, becomeLeaderRequest, (_, _) => ())
-    replicaManager.markPartitionOffline(tp0)
+    replicaManager.markPartitionOffline(null)
 
     val partitionStates = Map(tp0 -> new StopReplicaPartitionState()
       .setPartitionIndex(tp0.partition)
@@ -2836,6 +2844,7 @@ class ReplicaManagerTest {
         quotaManagers = quotaManager,
         metadataCache = MetadataCache.zkMetadataCache(config.brokerId, config.interBrokerProtocolVersion),
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+        logDirHealthChangeChannel = null,
         alterPartitionManager = alterPartitionManager) {
         override def getPartitionOrException(topicPartition: TopicPartition): Partition = {
           throw Errors.NOT_LEADER_OR_FOLLOWER.exception()
@@ -3223,7 +3232,7 @@ class ReplicaManagerTest {
     assertFalse(fooNew2)
     assertTrue(fooPart eq fooPart2)
     val bar1 = new TopicPartition("bar", 1)
-    replicaManager.markPartitionOffline(bar1)
+    replicaManager.markPartitionOffline(null)
     assertEquals(None, replicaManager.getOrCreatePartition(bar1, emptyDelta, BAR_UUID))
   }
 

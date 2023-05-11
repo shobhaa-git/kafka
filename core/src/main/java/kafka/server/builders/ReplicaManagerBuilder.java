@@ -27,6 +27,7 @@ import kafka.server.DelayedOperationPurgatory;
 import kafka.server.DelayedProduce;
 import kafka.server.KafkaConfig;
 import kafka.server.LogDirFailureChannel;
+import kafka.server.LogDirHealthChangeChannel;
 import kafka.server.MetadataCache;
 import kafka.server.QuotaFactory.QuotaManagers;
 import kafka.server.ReplicaManager;
@@ -50,6 +51,7 @@ public class ReplicaManagerBuilder {
     private QuotaManagers quotaManagers = null;
     private MetadataCache metadataCache = null;
     private LogDirFailureChannel logDirFailureChannel = null;
+    private LogDirHealthChangeChannel logDirHealthChangeChannel = null;
     private AlterPartitionManager alterPartitionManager = null;
     private BrokerTopicStats brokerTopicStats = new BrokerTopicStats();
     private AtomicBoolean isShuttingDown = new AtomicBoolean(false);
@@ -160,6 +162,7 @@ public class ReplicaManagerBuilder {
                              quotaManagers,
                              metadataCache,
                              logDirFailureChannel,
+                             logDirHealthChangeChannel,
                              alterPartitionManager,
                              brokerTopicStats,
                              isShuttingDown,

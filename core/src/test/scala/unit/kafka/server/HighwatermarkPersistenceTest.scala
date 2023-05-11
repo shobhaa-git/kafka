@@ -46,6 +46,8 @@ class HighwatermarkPersistenceTest {
     new LogDirFailureChannel(config.logDirs.size)
   }
 
+  val logDirHealthChangeChannel = new LogDirHealthChangeChannel(null, 0)
+
   val alterIsrManager = TestUtils.createAlterIsrManager()
 
   @AfterEach
@@ -72,6 +74,7 @@ class HighwatermarkPersistenceTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(configs.head.brokerId, configs.head.interBrokerProtocolVersion),
       logDirFailureChannel = logDirFailureChannels.head,
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterIsrManager)
     replicaManager.startup()
     try {
@@ -130,6 +133,7 @@ class HighwatermarkPersistenceTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(configs.head.brokerId, configs.head.interBrokerProtocolVersion),
       logDirFailureChannel = logDirFailureChannels.head,
+      logDirHealthChangeChannel = logDirHealthChangeChannel,
       alterPartitionManager = alterIsrManager)
     replicaManager.startup()
     try {

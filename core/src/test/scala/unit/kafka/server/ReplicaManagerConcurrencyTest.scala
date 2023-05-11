@@ -173,6 +173,7 @@ class ReplicaManagerConcurrencyTest {
       quotaManagers = QuotaFactory.instantiate(config, metrics, time, ""),
       metadataCache = metadataCache,
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = new MockAlterPartitionManager(channel)
     ) {
       override def createReplicaFetcherManager(

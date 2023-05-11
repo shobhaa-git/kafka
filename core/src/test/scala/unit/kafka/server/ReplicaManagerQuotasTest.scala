@@ -300,6 +300,7 @@ class ReplicaManagerQuotasTest {
       quotaManagers = quotaManager,
       metadataCache = MetadataCache.zkMetadataCache(leaderBrokerId, configs.head.interBrokerProtocolVersion),
       logDirFailureChannel = new LogDirFailureChannel(configs.head.logDirs.size),
+      logDirHealthChangeChannel = null,
       alterPartitionManager = alterIsrManager)
 
     //create the two replicas

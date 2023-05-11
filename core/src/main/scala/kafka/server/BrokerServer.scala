@@ -111,6 +111,7 @@ class BrokerServer(
   var dataPlaneRequestHandlerPool: KafkaRequestHandlerPool = null
 
   var logDirFailureChannel: LogDirFailureChannel = null
+  var logDirHealthChangeChannel: LogDirHealthChangeChannel = null
   var logManager: LogManager = null
 
   var tokenManager: DelegationTokenManager = null
@@ -263,6 +264,7 @@ class BrokerServer(
         quotaManagers = quotaManagers,
         metadataCache = metadataCache,
         logDirFailureChannel = logDirFailureChannel,
+        logDirHealthChangeChannel = logDirHealthChangeChannel,
         alterPartitionManager = alterPartitionManager,
         brokerTopicStats = brokerTopicStats,
         isShuttingDown = isShuttingDown,

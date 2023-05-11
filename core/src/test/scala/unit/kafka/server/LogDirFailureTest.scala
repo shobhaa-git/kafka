@@ -112,7 +112,7 @@ class LogDirFailureTest extends IntegrationTestHarness {
     this.producerConfig.setProperty(ProducerConfig.RETRIES_CONFIG, "0")
     this.producerConfig.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false")
     val producer = createProducer()
-    val partition = new TopicPartition(topic, 0)
+    //val partition = new TopicPartition(topic, 0)
 
     val partitionInfo = producer.partitionsFor(topic).asScala.find(_.partition() == 0).get
     val leaderServerId = partitionInfo.leader().id()
@@ -120,7 +120,7 @@ class LogDirFailureTest extends IntegrationTestHarness {
     val followerServerId = partitionInfo.replicas().map(_.id()).find(_ != leaderServerId).get
     val followerServer = servers.find(_.config.brokerId == followerServerId).get
 
-    followerServer.replicaManager.markPartitionOffline(partition)
+    followerServer.replicaManager.markPartitionOffline(null)
     // Send a message to another partition whose leader is the same as partition 0
     // so that ReplicaFetcherThread on the follower will get response from leader immediately
     val anotherPartitionWithTheSameLeader = (1 until partitionNum).find { i =>

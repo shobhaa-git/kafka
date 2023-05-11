@@ -118,6 +118,7 @@ class KafkaServer(
   var controlPlaneRequestHandlerPool: KafkaRequestHandlerPool = null
 
   var logDirFailureChannel: LogDirFailureChannel = null
+  var logDirHealthChangeChannel: LogDirHealthChangeChannel = null
   @volatile private var _logManager: LogManager = null
 
   @volatile private var _replicaManager: ReplicaManager = null
@@ -249,9 +250,7 @@ class KafkaServer(
         KafkaBroker.notifyClusterListeners(clusterId, kafkaMetricsReporters ++ metrics.reporters.asScala)
 
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
-
-        val monitorClass = getClass.getClassLoader.loadClass("io.stats.plugin.LinuxBrokerLogDirHealthMonitor")
-        val brokerLogDirHealthMonitor = monitorClass.getConstructor(classOf[Int]).newInstance(config.brokerId).asInstanceOf[BrokerLogDirHealthMonitor]
+        logDirHealthChangeChannel = new LogDirHealthChangeChannel(logDirFailureChannel, config.logDirs.size)
 
         /* start log manager */
         _logManager = LogManager(
@@ -461,7 +460,11 @@ class KafkaServer(
         val props = new util.HashMap[String, Any]
         val listener = brokerInfo.broker.endPoints.find(x => x.listenerName.value.equals("REPLICATION")).get
         props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, s"${listener.host}:${listener.port}")
+
+        val monitorClass = getClass.getClassLoader.loadClass("io.stats.plugin.LinuxBrokerLogDirHealthMonitor")
+        val brokerLogDirHealthMonitor = monitorClass.getConstructor(classOf[Int]).newInstance(config.brokerId).asInstanceOf[BrokerLogDirHealthMonitor]
         brokerLogDirHealthMonitor.configure(props)
+        brokerLogDirHealthMonitor.register(logDirHealthChangeChannel)
 
         socketServer.enableRequestProcessing(authorizerFutures)
 
@@ -492,6 +495,7 @@ class KafkaServer(
       quotaManagers = quotaManagers,
       metadataCache = metadataCache,
       logDirFailureChannel = logDirFailureChannel,
+      logDirHealthChangeChannel = logDirHealthChangeChannel,
       alterPartitionManager = alterPartitionManager,
       brokerTopicStats = brokerTopicStats,
       isShuttingDown = isShuttingDown,
