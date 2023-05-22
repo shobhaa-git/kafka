@@ -91,9 +91,9 @@ public class LinuxBrokerLogDirHealthMonitor implements BrokerLogDirHealthMonitor
 //                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("", currentHealth));
 //            }
 
-            if(brokerId.equals("0")) {
+            if(brokerId.equals("2")) {
                 Thread.sleep(30000);
-                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("/tmp/kafkaoss-logs-0", BrokerLogDirHealth.Slow));
+                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("/tmp/kafka-logs-2", BrokerLogDirHealth.Slow));
             }
 
         } catch (Exception e) {

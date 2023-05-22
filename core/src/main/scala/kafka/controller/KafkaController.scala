@@ -509,9 +509,9 @@ class KafkaController(val config: KafkaConfig,
     // TODO: Do it multiple brokers at a time.
     for ((id, eventType) <- brokerIds.zip(eventTypes)) {
       if( eventType == LogDirEventNotificationSequenceZNode.LogDirDegradedEvent) {
-        // send stop replica request and then LeaderAndIsr
         val replicasOnBrokers = controllerContext.replicasOnBrokers(Set(id))
-        replicaStateMachine.handleStateChanges(replicasOnBrokers.toSeq, OfflineReplica)
+        replicaStateMachine.handleStateChanges(replicasOnBrokers.toSeq, OnlineReplica)
+        //onReplicasBecomeOffline(controllerContext.replicasOnBrokers(Set(id)))
       } else {
         // send LeaderAndIsrRequest for all replicas on those brokers to see if they are still online.
         info(s"Handling log directory failure for brokers ${brokerIds.mkString(",")}")
