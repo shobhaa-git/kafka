@@ -192,25 +192,28 @@ class LogManager(logDirs: Seq[File],
   /**
    * The log directory failure handler. It will stop log cleaning in that directory.
    *
-   * @param dir        the absolute path of the log directory
+   * @param dir        the path and the state of the log directory
    */
-  def handleLogDirFailure(dir: String): Unit = {
+  def handleLogDirFailure(dir: OfflineLogDir): Unit = {
     warn(s"Stopping serving logs in dir $dir")
     logCreationOrDeletionLock synchronized {
-      _liveLogDirs.remove(new File(dir))
-      if (_liveLogDirs.isEmpty) {
-        fatal(s"Shutdown broker because all log dirs in ${logDirs.mkString(", ")} have failed")
-        Exit.halt(1)
+      // Remove it from the live log directories only if it is offline.
+      if(dir.getState == OfflineLogDirState.OFFLINE) {
+        _liveLogDirs.remove(new File(dir.getLogDir))
+        if (_liveLogDirs.isEmpty) {
+          fatal(s"Shutdown broker because all log dirs in ${logDirs.mkString(", ")} have failed")
+          Exit.halt(1)
+        }
       }
 
-      recoveryPointCheckpoints = recoveryPointCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
-      logStartOffsetCheckpoints = logStartOffsetCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
+      recoveryPointCheckpoints = recoveryPointCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir.getLogDir }
+      logStartOffsetCheckpoints = logStartOffsetCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir.getLogDir }
       if (cleaner != null)
-        cleaner.handleLogDirFailure(dir)
+        cleaner.handleLogDirFailure(dir.getLogDir)
 
       def removeOfflineLogs(logs: Pool[TopicPartition, UnifiedLog]): Iterable[TopicPartition] = {
         val offlineTopicPartitions: Iterable[TopicPartition] = logs.collect {
-          case (tp, log) if log.parentDir == dir => tp
+          case (tp, log) if log.parentDir == dir.getLogDir => tp
         }
         offlineTopicPartitions.foreach { topicPartition => {
           val removedLog = removeLogAndMetrics(logs, topicPartition)
@@ -226,8 +229,8 @@ class LogManager(logDirs: Seq[File],
       val offlineFutureTopicPartitions = removeOfflineLogs(futureLogs)
 
       warn(s"Logs for partitions ${offlineCurrentTopicPartitions.mkString(",")} are offline and " +
-           s"logs for future partitions ${offlineFutureTopicPartitions.mkString(",")} are offline due to failure on log directory $dir")
-      dirLocks.filter(_.file.getParent == dir).foreach(dir => CoreUtils.swallow(dir.destroy(), this))
+           s"logs for future partitions ${offlineFutureTopicPartitions.mkString(",")} are offline due to failure on log directory ${dir.getLogDir}")
+      dirLocks.filter(_.file.getParent == dir.getLogDir).foreach(dir => CoreUtils.swallow(dir.destroy(), this))
     }
   }
 

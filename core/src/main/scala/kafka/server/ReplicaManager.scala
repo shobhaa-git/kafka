@@ -178,6 +178,11 @@ object HostedPartition {
    * This broker hosts the partition, but it is in an offline log directory.
    */
   final object Offline extends HostedPartition
+
+  /**
+   * This broker hosts the partition, but it is in a degraded log directory.
+   */
+  final case class Degraded(partition: Partition) extends HostedPartition
 }
 
 object ReplicaManager {
@@ -319,6 +324,7 @@ class ReplicaManager(val config: KafkaConfig,
   private def maybeRemoveTopicMetrics(topic: String): Unit = {
     val topicHasNonOfflinePartition = allPartitions.values.exists {
       case online: HostedPartition.Online => topic == online.partition.topic
+      case degraded: HostedPartition.Degraded => topic == degraded.partition.topic
       case HostedPartition.None | HostedPartition.Offline => false
     }
     if (!topicHasNonOfflinePartition) // nothing online or deferred
@@ -404,6 +410,40 @@ class ReplicaManager(val config: KafkaConfig,
                   s"leader epoch $requestLeaderEpoch matches the current leader epoch")
                 responseMap.put(topicPartition, Errors.FENCED_LEADER_EPOCH)
               }
+
+            case HostedPartition.Degraded(partition) =>
+              //              stateChangeLogger.warn(s"Ignoring StopReplica request (delete=$deletePartition) from " +
+              //                s"controller $controllerId with correlation id $correlationId " +
+              //                s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
+              //                "partition is in an offline log directory")
+              //              responseMap.put(topicPartition, Errors.NONE)
+              val currentLeaderEpoch = partition.getLeaderEpoch
+              val requestLeaderEpoch = partitionState.leaderEpoch
+              // When a topic is deleted, the leader epoch is not incremented. To circumvent this,
+              // a sentinel value (EpochDuringDelete) overwriting any previous epoch is used.
+              // When an older version of the StopReplica request which does not contain the leader
+              // epoch, a sentinel value (NoEpoch) is used and bypass the epoch validation.
+              if (requestLeaderEpoch == LeaderAndIsr.EpochDuringDelete ||
+                requestLeaderEpoch == LeaderAndIsr.NoEpoch ||
+                requestLeaderEpoch > currentLeaderEpoch) {
+                stoppedPartitions += topicPartition -> deletePartition
+                // Assume that everything will go right. It is overwritten in case of an error.
+                responseMap.put(topicPartition, Errors.NONE)
+              } else if (requestLeaderEpoch < currentLeaderEpoch) {
+                stateChangeLogger.warn(s"Ignoring StopReplica request (delete=$deletePartition) from " +
+                  s"controller $controllerId with correlation id $correlationId " +
+                  s"epoch $controllerEpoch for partition $topicPartition since its associated " +
+                  s"leader epoch $requestLeaderEpoch is smaller than the current " +
+                  s"leader epoch $currentLeaderEpoch")
+                responseMap.put(topicPartition, Errors.FENCED_LEADER_EPOCH)
+              } else {
+                stateChangeLogger.info(s"Ignoring StopReplica request (delete=$deletePartition) from " +
+                  s"controller $controllerId with correlation id $correlationId " +
+                  s"epoch $controllerEpoch for partition $topicPartition since its associated " +
+                  s"leader epoch $requestLeaderEpoch matches the current leader epoch")
+                responseMap.put(topicPartition, Errors.FENCED_LEADER_EPOCH)
+              }
+
 
             case HostedPartition.None =>
               // Delete log and corresponding folders in case replica manager doesn't hold them anymore.
@@ -544,6 +584,9 @@ class ReplicaManager(val config: KafkaConfig,
         // forces clients to refresh metadata to find the new location. This can happen, for example,
         // during a partition reassignment if a produce request from the client is sent to a broker after
         // the local replica has been deleted.
+        Left(Errors.NOT_LEADER_OR_FOLLOWER)
+
+      case HostedPartition.Degraded(partition) =>
         Left(Errors.NOT_LEADER_OR_FOLLOWER)
 
       case HostedPartition.None =>
@@ -730,6 +773,13 @@ class ReplicaManager(val config: KafkaConfig,
             throw new KafkaStorageException(s"Log directory $destinationDir is offline")
 
           getPartition(topicPartition) match {
+            case HostedPartition.Degraded(partition) =>
+              // Stop current replica movement if the destinationDir is different from the existing destination log directory
+              if (partition.futureReplicaDirChanged(destinationDir)) {
+                replicaAlterLogDirsManager.removeFetcherForPartitions(Set(topicPartition))
+                partition.removeFutureLocalReplica()
+              }
+
             case HostedPartition.Online(partition) =>
               // Stop current replica movement if the destinationDir is different from the existing destination log directory
               if (partition.futureReplicaDirChanged(destinationDir)) {
@@ -1363,6 +1413,14 @@ class ReplicaManager(val config: KafkaConfig,
               case HostedPartition.Online(partition) =>
                 Some(partition)
 
+              case HostedPartition.Degraded(partition) =>
+                stateChangeLogger.warn(s"Ignoring LeaderAndIsr request from " +
+                  s"controller $controllerId with correlation id $correlationId " +
+                  s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
+                  "partition is in an offline log directory")
+                responseMap.put(topicPartition, Errors.KAFKA_STORAGE_ERROR)
+                None
+
               case HostedPartition.None =>
                 val partition = Partition(topicPartition, time, this)
                 allPartitions.putIfNotExists(topicPartition, HostedPartition.Online(partition))
@@ -1853,39 +1911,57 @@ class ReplicaManager(val config: KafkaConfig,
     Partition.removeMetrics(tp)
   }
 
+  def markPartitionDegraded(tp: TopicPartition): Unit = replicaStateChangeLock synchronized {
+    warn("Marking all hosted partitions as DEGRADED")
+    val partition = Partition(tp, time, this)
+    allPartitions.put(tp, HostedPartition.Degraded(partition))
+    Partition.removeMetrics(tp)
+  }
+
   /**
    * The log directory failure handler for the replica
    *
    * @param dir                     the absolute path of the log directory
    * @param sendZkNotification      check if we need to send notification to zookeeper node (needed for unit test)
    */
-  def handleLogDirFailure(dir: String, sendZkNotification: Boolean = true): Unit = {
-    if (!logManager.isLogDirOnline(dir))
+  def handleLogDirFailure(dir: OfflineLogDir, sendZkNotification: Boolean = true): Unit = {
+    if (!logManager.isLogDirOnline(dir.getLogDir))
       return
-    warn(s"Stopping serving replicas in dir $dir")
+    warn(s"Stopping serving replicas in dir ${dir.getLogDir}")
     replicaStateChangeLock synchronized {
       val newOfflinePartitions = onlinePartitionsIterator.filter { partition =>
-        partition.log.exists { _.parentDir == dir }
+        partition.log.exists {
+          _.parentDir == dir.getLogDir
+        }
       }.map(_.topicPartition).toSet
 
       val partitionsWithOfflineFutureReplica = onlinePartitionsIterator.filter { partition =>
-        partition.futureLog.exists { _.parentDir == dir }
+        partition.futureLog.exists {
+          _.parentDir == dir.getLogDir
+        }
       }.toSet
 
-      replicaFetcherManager.removeFetcherForPartitions(newOfflinePartitions)
-      replicaAlterLogDirsManager.removeFetcherForPartitions(newOfflinePartitions ++ partitionsWithOfflineFutureReplica.map(_.topicPartition))
+      if (dir.getState == OfflineLogDirState.DEGRADED) {
+        warn(s"Marking log directory ${dir.getLogDir} as DEGRADED")
+        newOfflinePartitions.foreach { topicPartition =>
+          markPartitionDegraded(topicPartition)
+        }
+      } else {
+        replicaFetcherManager.removeFetcherForPartitions(newOfflinePartitions)
+        replicaAlterLogDirsManager.removeFetcherForPartitions(newOfflinePartitions ++ partitionsWithOfflineFutureReplica.map(_.topicPartition))
 
-      partitionsWithOfflineFutureReplica.foreach(partition => partition.removeFutureLocalReplica(deleteFromLogDir = false))
-      newOfflinePartitions.foreach { topicPartition =>
-        markPartitionOffline(topicPartition)
-      }
-      newOfflinePartitions.map(_.topic).foreach { topic: String =>
-        maybeRemoveTopicMetrics(topic)
-      }
-      highWatermarkCheckpoints = highWatermarkCheckpoints.filter { case (checkpointDir, _) => checkpointDir != dir }
+        partitionsWithOfflineFutureReplica.foreach(partition => partition.removeFutureLocalReplica(deleteFromLogDir = false))
+        newOfflinePartitions.foreach { topicPartition =>
+          markPartitionOffline(topicPartition)
+        }
+        newOfflinePartitions.map(_.topic).foreach { topic: String =>
+          maybeRemoveTopicMetrics(topic)
+        }
+        highWatermarkCheckpoints = highWatermarkCheckpoints.filter { case (checkpointDir, _) => checkpointDir != dir.getLogDir }
 
-      warn(s"Broker $localBrokerId stopped fetcher for partitions ${newOfflinePartitions.mkString(",")} and stopped moving logs " +
-           s"for partitions ${partitionsWithOfflineFutureReplica.mkString(",")} because they are in the failed log directory $dir.")
+        warn(s"Broker $localBrokerId stopped fetcher for partitions ${newOfflinePartitions.mkString(",")} and stopped moving logs " +
+          s"for partitions ${partitionsWithOfflineFutureReplica.mkString(",")} because they are in the failed log directory ${dir.getLogDir}.")
+      }
     }
     logManager.handleLogDirFailure(dir)
 
@@ -1893,9 +1969,9 @@ class ReplicaManager(val config: KafkaConfig,
       if (zkClient.isEmpty) {
         warn("Unable to propagate log dir failure via Zookeeper in KRaft mode")
       } else {
-        zkClient.get.propagateLogDirEvent(localBrokerId)
+        zkClient.get.propagateLogDirEvent(localBrokerId, dir.getState)
       }
-    warn(s"Stopped serving replicas in dir $dir")
+    warn(s"Stopped serving replicas in dir ${dir.getLogDir}")
   }
 
   def removeMetrics(): Unit = {
@@ -1970,6 +2046,11 @@ class ReplicaManager(val config: KafkaConfig,
             new EpochEndOffset()
               .setPartition(offsetForLeaderPartition.partition)
               .setErrorCode(Errors.KAFKA_STORAGE_ERROR.code)
+
+          case HostedPartition.Degraded(partition) =>
+            new EpochEndOffset()
+              .setPartition(offsetForLeaderPartition.partition)
+              .setErrorCode(Errors.NOT_LEADER_OR_FOLLOWER.code)
 
           case HostedPartition.None if metadataCache.contains(tp) =>
             new EpochEndOffset()
@@ -2048,6 +2129,15 @@ class ReplicaManager(val config: KafkaConfig,
           s"with topic id $topicId because it resides in an offline log " +
           "directory.")
         None
+
+      case HostedPartition.Degraded(partition) =>
+        if (partition.topicId.exists(_ != topicId)) {
+          // Note: Partition#topicId will be None here if the Log object for this partition
+          // has not been created.
+          throw new IllegalStateException(s"Topic $tp exists, but its ID is " +
+            s"${partition.topicId.get}, not $topicId as expected")
+        }
+        Some(partition, false)
 
       case HostedPartition.Online(partition) =>
         if (partition.topicId.exists(_ != topicId)) {

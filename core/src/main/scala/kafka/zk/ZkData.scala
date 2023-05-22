@@ -19,7 +19,6 @@ package kafka.zk
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util
 import java.util.Properties
-
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.JsonProcessingException
 import kafka.api.LeaderAndIsr
@@ -28,9 +27,9 @@ import kafka.common.{NotificationHandler, ZkNodeChangeNotificationListener}
 import kafka.controller.{IsrChangeNotificationHandler, LeaderIsrAndControllerEpoch, ReplicaAssignment}
 import kafka.security.authorizer.AclAuthorizer.VersionedAcls
 import kafka.security.authorizer.AclEntry
-import kafka.server.{ConfigType, DelegationTokenManager}
+import kafka.server.{ConfigType, DelegationTokenManager, OfflineLogDirState}
 import kafka.utils.Json
-import kafka.utils.json.JsonObject
+import kafka.utils.json.{JsonObject, JsonValue}
 import org.apache.kafka.common.errors.UnsupportedVersionException
 import org.apache.kafka.common.feature.Features._
 import org.apache.kafka.common.feature.{Features, SupportedVersionRange}
@@ -454,12 +453,17 @@ object LogDirEventNotificationZNode {
 object LogDirEventNotificationSequenceZNode {
   val SequenceNumberPrefix = "log_dir_event_"
   val LogDirFailureEvent = 1
+  val LogDirDegradedEvent = 2
   def path(sequenceNumber: String) = s"${LogDirEventNotificationZNode.path}/$SequenceNumberPrefix$sequenceNumber"
-  def encode(brokerId: Int) = {
-    Json.encodeAsBytes(Map("version" -> 1, "broker" -> brokerId, "event" -> LogDirFailureEvent).asJava)
+  def encode(brokerId: Int, dirState: OfflineLogDirState) = {
+    if(dirState == OfflineLogDirState.DEGRADED) {
+      Json.encodeAsBytes(Map("version" -> 1, "broker" -> brokerId, "event" -> LogDirDegradedEvent).asJava)
+    } else {
+      Json.encodeAsBytes(Map("version" -> 1, "broker" -> brokerId, "event" -> LogDirFailureEvent).asJava)
+    }
   }
-  def decode(bytes: Array[Byte]): Option[Int] = Json.parseBytes(bytes).map { js =>
-    js.asJsonObject("broker").to[Int]
+  def decode(bytes: Array[Byte]): Option[JsonValue] = {
+    Json.parseBytes(bytes)
   }
   def sequenceNumber(path: String) = path.substring(path.lastIndexOf(SequenceNumberPrefix) + SequenceNumberPrefix.length)
 }

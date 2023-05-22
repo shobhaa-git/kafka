@@ -25,8 +25,9 @@ import kafka.log.LogConfig
 import kafka.metrics.KafkaMetricsGroup
 import kafka.security.authorizer.AclAuthorizer.{NoAcls, VersionedAcls}
 import kafka.security.authorizer.AclEntry
-import kafka.server.ConfigType
+import kafka.server.{ConfigType, OfflineLogDirState}
 import kafka.utils.Logging
+import kafka.utils.json.JsonValue
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zookeeper._
 import org.apache.kafka.common.errors.ControllerMovedException
@@ -566,7 +567,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @param sequenceNumbers the sequence numbers associated with the log dir event notifications.
    * @return broker ids associated with the given log dir event notifications.
    */
-  def getBrokerIdsFromLogDirEvents(sequenceNumbers: Seq[String]): Seq[Int] = {
+  def getBrokerIdsFromLogDirEvents(sequenceNumbers: Seq[String]): Seq[JsonValue] = {
     val getDataRequests = sequenceNumbers.map { sequenceNumber =>
       GetDataRequest(LogDirEventNotificationSequenceZNode.path(sequenceNumber))
     }
@@ -1244,10 +1245,10 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     createResponse.maybeThrow()
   }
 
-  def propagateLogDirEvent(brokerId: Int): Unit = {
+  def propagateLogDirEvent(brokerId: Int, dirState: OfflineLogDirState): Unit = {
     val logDirEventNotificationPath: String = createSequentialPersistentPath(
       LogDirEventNotificationZNode.path + "/" + LogDirEventNotificationSequenceZNode.SequenceNumberPrefix,
-      LogDirEventNotificationSequenceZNode.encode(brokerId))
+      LogDirEventNotificationSequenceZNode.encode(brokerId, dirState))
     debug(s"Added $logDirEventNotificationPath for broker $brokerId")
   }
 

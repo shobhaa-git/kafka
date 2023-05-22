@@ -28,6 +28,7 @@ import kafka.server._
 import kafka.server.metadata.ZkFinalizedFeatureCache
 import kafka.utils._
 import kafka.utils.Implicits._
+import kafka.utils.json.JsonValue
 import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zk.{FeatureZNodeStatus, _}
@@ -497,11 +498,27 @@ class KafkaController(val config: KafkaConfig,
    * to all these brokers to query the state of their replicas. Replicas with an offline log directory respond with
    * KAFKA_STORAGE_ERROR, which will be handled by the LeaderAndIsrResponseReceived event.
    */
-  private def onBrokerLogDirFailure(brokerIds: Seq[Int]): Unit = {
+  private def onBrokerLogDirFailure(brokers: Seq[JsonValue]): Unit = {
     // send LeaderAndIsrRequest for all replicas on those brokers to see if they are still online.
-    info(s"Handling log directory failure for brokers ${brokerIds.mkString(",")}")
-    val replicasOnBrokers = controllerContext.replicasOnBrokers(brokerIds.toSet)
-    replicaStateMachine.handleStateChanges(replicasOnBrokers.toSeq, OnlineReplica)
+    val brokerIds = brokers.map(js => {
+      js.asJsonObject("broker").to[Int]})
+
+    val eventTypes = brokers.map(js => {
+      js.asJsonObject("event").to[Int]})
+
+    // TODO: Do it multiple brokers at a time.
+    for ((id, eventType) <- brokerIds.zip(eventTypes)) {
+      if( eventType == LogDirEventNotificationSequenceZNode.LogDirDegradedEvent) {
+        // send stop replica request and then LeaderAndIsr
+        val replicasOnBrokers = controllerContext.replicasOnBrokers(Set(id))
+        replicaStateMachine.handleStateChanges(replicasOnBrokers.toSeq, OfflineReplica)
+      } else {
+        // send LeaderAndIsrRequest for all replicas on those brokers to see if they are still online.
+        info(s"Handling log directory failure for brokers ${brokerIds.mkString(",")}")
+        val replicasOnBrokers = controllerContext.replicasOnBrokers(Set(id))
+        replicaStateMachine.handleStateChanges(replicasOnBrokers.toSeq, OnlineReplica)
+      }
+    }
   }
 
   /**

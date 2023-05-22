@@ -37,7 +37,7 @@ import kafka.utils.Logging
 class LogDirFailureChannel(logDirNum: Int) extends Logging {
 
   private val offlineLogDirs = new ConcurrentHashMap[String, String]
-  private val offlineLogDirQueue = new ArrayBlockingQueue[String](logDirNum)
+  private val offlineLogDirQueue = new ArrayBlockingQueue[OfflineLogDir](logDirNum)
 
   def hasOfflineLogDir(logDir: String): Boolean = {
     offlineLogDirs.containsKey(logDir)
@@ -50,13 +50,19 @@ class LogDirFailureChannel(logDirNum: Int) extends Logging {
   def maybeAddOfflineLogDir(logDir: String, msg: => String, e: IOException): Unit = {
     error(msg, e)
     if (offlineLogDirs.putIfAbsent(logDir, logDir) == null)
-      offlineLogDirQueue.add(logDir)
+      offlineLogDirQueue.add(new OfflineLogDir(logDir, OfflineLogDirState.OFFLINE))
+  }
+
+  def maybeAddOfflineLogDir(logDir: String, state: OfflineLogDirState, msg: => String): Unit = {
+    error(msg)
+    if (offlineLogDirs.putIfAbsent(logDir, logDir) == null)
+      offlineLogDirQueue.add(new OfflineLogDir(logDir, OfflineLogDirState.DEGRADED))
   }
 
   /*
    * Get the next offline log dir from logDirFailureEvent queue.
    * The method will wait if necessary until a new offline log directory becomes available
    */
-  def takeNextOfflineLogDir(): String = offlineLogDirQueue.take()
+  def takeNextOfflineLogDir(): OfflineLogDir = offlineLogDirQueue.take()
 
 }

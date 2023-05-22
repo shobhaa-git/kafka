@@ -47,6 +47,7 @@ public class LinuxBrokerLogDirHealthMonitor implements BrokerLogDirHealthMonitor
     private final DiskHealthAnalyzer analyzer = new DiskHealthAnalyzer();
     private final AggregatedIoStatistics statistics = new AggregatedIoStatistics();
     private BrokerLogDirHealth currentHealth;
+    private String brokerId;
 
     private volatile KafkaProducer<Long, byte[]> producer;
     private volatile ScheduledExecutorService executor;
@@ -55,6 +56,7 @@ public class LinuxBrokerLogDirHealthMonitor implements BrokerLogDirHealthMonitor
     public void configure(Map<String, ?> configs) {
         executor = newSingleThreadScheduledExecutor();
         executor.scheduleWithFixedDelay(() -> run(), SAMPLING_PERIOD_SEC, SAMPLING_PERIOD_SEC, SECONDS);
+        brokerId = (String) configs.get("broker.id");
 
         Properties properties = new Properties();
         properties.putAll(configs);
@@ -76,21 +78,26 @@ public class LinuxBrokerLogDirHealthMonitor implements BrokerLogDirHealthMonitor
 
     private void run() {
         try {
-            String path = String.format(PATH, "nvme0n1");
-            String stat = new String(Files.readAllBytes(Paths.get(path)), Charset.defaultCharset());
+//            String path = String.format(PATH, "nvme0n1");
+//            String stat = new String(Files.readAllBytes(Paths.get(path)), Charset.defaultCharset());
+//
+//            IoStatistics snapshot = IoStatistics.newIoStatistics(Instant.now(), stat);
+//            statistics.push(snapshot);
+//            producer.send(snapshot.toProducerRecord());
+//
+//            BrokerLogDirHealth health = analyzer.analyze(statistics);
+//            if (currentHealth != health) {
+//                currentHealth = health;
+//                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("", currentHealth));
+//            }
 
-            IoStatistics snapshot = IoStatistics.newIoStatistics(Instant.now(), stat);
-            statistics.push(snapshot);
-            producer.send(snapshot.toProducerRecord());
-
-            BrokerLogDirHealth health = analyzer.analyze(statistics);
-            if (currentHealth != health) {
-                currentHealth = health;
-                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("", currentHealth));
+            if(brokerId.equals("0")) {
+                Thread.sleep(30000);
+                handlers.forEach(handler -> handler.onBrokerLogDirHealthChanged("/tmp/kafkaoss-logs-0", BrokerLogDirHealth.Slow));
             }
 
         } catch (Exception e) {
-            log.error(e.getMessage(), e);
+//            log.error(e.getMessage(), e);
         }
     }
 }

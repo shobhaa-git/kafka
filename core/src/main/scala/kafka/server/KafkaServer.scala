@@ -459,7 +459,10 @@ class KafkaServer(
 
         val props = new util.HashMap[String, Any]
         props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+        props.put("broker.id", config.brokerId.toString);
+        brokerLogDirHealthMonitor.register(new OfflineBrokerLogDirHealthChangeHandler(logDirFailureChannel))
         brokerLogDirHealthMonitor.configure(props)
+
 
         socketServer.enableRequestProcessing(authorizerFutures)
 

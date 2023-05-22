@@ -42,7 +42,7 @@ class DescribeLogDirsRequestTest extends BaseRequestTest {
   def testDescribeLogDirsRequest(): Unit = {
     val onlineDir = new File(servers.head.config.logDirs.head).getAbsolutePath
     val offlineDir = new File(servers.head.config.logDirs.tail.head).getAbsolutePath
-    servers.head.replicaManager.handleLogDirFailure(offlineDir)
+    servers.head.replicaManager.handleLogDirFailure(new OfflineLogDir(offlineDir, OfflineLogDirState.OFFLINE))
     createTopic(topic, partitionNum, 1)
     TestUtils.generateAndProduceMessages(servers, topic, 10)
 
